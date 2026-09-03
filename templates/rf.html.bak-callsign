@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>HB9IIU RF Console</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1118;--panel:#141d27;--line:#293747;--text:#e7edf4;--muted:#91a2b4;--cyan:#46c7e8;--green:#43d17d;--red:#ff6175;--amber:#ffc45c}
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;background:radial-gradient(circle at 85% 0,#153040 0,#0b1118 43%);color:var(--text);font:15px/1.45 system-ui,-apple-system,sans-serif}
+    main{max-width:1180px;margin:auto;padding:34px 22px 54px} header{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:22px}
+    h1{margin:0;font-size:clamp(28px,4vw,44px);letter-spacing:-.04em}.subtitle{margin:5px 0 0;color:var(--muted)} a{color:var(--cyan);text-decoration:none}
+    .status{display:flex;align-items:center;gap:9px;padding:9px 14px;border:1px solid var(--line);border-radius:999px;background:var(--panel)}.dot{width:10px;height:10px;border-radius:50%;background:var(--red);box-shadow:0 0 13px currentColor}.dot.ready{background:var(--cyan)}.dot.onair{background:var(--red);animation:pulse 1.2s infinite}@keyframes pulse{50%{opacity:.45}}
+    .layout{display:grid;grid-template-columns:1.55fr .75fr;gap:18px}.card{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:16px;padding:21px;box-shadow:0 18px 60px #0004}
+    h2{margin:0 0 16px;color:var(--muted);font-size:13px;letter-spacing:.1em;text-transform:uppercase}.spectrum{grid-column:1/-1}.canvas-wrap{position:relative;border:1px solid var(--line);border-radius:11px;overflow:hidden;background:#081019}
+    canvas{display:block;width:100%;height:390px;cursor:crosshair}.spectrum-foot{display:flex;justify-content:space-between;gap:15px;margin-top:11px;color:var(--muted);font-size:13px}.live{color:var(--green)}
+    .selected{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:14px}.metric{padding:10px 12px;background:#0d151e;border:1px solid var(--line);border-radius:9px}.metric small{display:block;color:var(--muted);margin-bottom:2px}.metric strong{font-variant-numeric:tabular-nums}
+    .fields{display:grid;grid-template-columns:1fr 1fr;gap:14px}label{display:block;color:var(--muted);font-size:13px}label span{display:block;margin-bottom:6px}input,select{width:100%;padding:11px 12px;color:var(--text);background:#0d151e;border:1px solid var(--line);border-radius:9px;font:inherit;outline:none}input:focus,select:focus{border-color:var(--cyan);box-shadow:0 0 0 3px #46c7e822}
+    .range{display:flex;align-items:center;gap:10px}.range output{min-width:53px;text-align:right;color:var(--text);font-variant-numeric:tabular-nums}.actions{display:grid;gap:10px;margin-top:18px}button{padding:12px;border:0;border-radius:10px;font:700 15px system-ui;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.apply{background:var(--cyan);color:#06141a}.ptt{background:var(--green);color:#07140c}.ptt.stop{background:#5b222d;color:#ffabb6;border:1px solid #963847}
+    .frequency-readout{min-height:45px;display:flex;align-items:center;padding:11px 12px;color:var(--text);background:#0d151e;border:1px solid var(--line);border-radius:9px;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
+    dl{display:grid;grid-template-columns:auto 1fr;gap:11px 15px;margin:0}dt{color:var(--muted)}dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}.note{margin-top:18px;padding-top:15px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}.error{min-height:22px;margin-top:12px;color:var(--red)}
+    @media(max-width:760px){header{align-items:flex-start;flex-direction:column}.layout{grid-template-columns:1fr}.selected,.fields{grid-template-columns:1fr}canvas{height:300px}}
+  </style>
+</head>
+<body><main>
+  <header><div><h1>HB9IIU RF Console</h1><p class="subtitle">QO-100 spectrum · Frequency selection · PlutoSDR</p></div><div class="status"><span class="dot" id="dot"></span><strong id="state">Checking Pluto…</strong></div></header>
+  <div class="layout">
+    <section class="card spectrum"><h2>QO-100 wideband spectrum</h2><div class="canvas-wrap"><canvas id="spectrum"></canvas></div><div class="spectrum-foot"><span id="feed">Connecting to BATC FFT…</span><span>Click an empty slot to select its centre frequency</span></div><div class="selected"><div class="metric"><small>Downlink</small><strong id="selectedDown">10 494.750 MHz</strong></div><div class="metric"><small>Pluto uplink</small><strong id="selectedUp">2 405.250 MHz</strong></div><div class="metric"><small>Proposed bandwidth</small><strong id="selectedBw">500 kS/s</strong></div></div></section>
+    <section class="card"><h2>RF settings</h2><div class="fields">
+      <label><span>TX frequency selected on spectrum</span><input id="frequency" type="hidden"><div class="frequency-readout" id="frequencyLabel">2 405.250 MHz</div></label>
+      <label><span>Symbol rate</span><select id="symbolRate"><option value="125">125 kS/s</option><option value="250">250 kS/s</option><option value="333">333 kS/s</option><option value="500">500 kS/s</option></select></label>
+      <label><span>FEC</span><select id="fec"><option value="12">1/2</option><option value="23">2/3</option><option value="34">3/4</option></select></label>
+      <label><span>Output power</span><div class="range"><input id="power" type="range" min="-79" max="0" step="1"><output id="powerValue">−79 dB</output></div></label>
+    </div><div class="actions"><button class="apply" id="apply">Apply RF settings</button><button class="ptt" id="ptt">Enable PTT</button></div><div class="error" id="error"></div></section>
+    <aside class="card"><h2>Pluto status</h2><dl><dt>Address</dt><dd id="address">192.168.0.50</dd><dt>State</dt><dd id="pttState">Standby</dd><dt>Frequency</dt><dd id="currentFrequency">—</dd><dt>Mode</dt><dd id="mode">—</dd><dt>Buffer</dt><dd id="buffer">—</dd></dl><p class="note">Frequency selection never starts transmission. RF settings are applied with PTT off; PTT is always a separate action.</p><a href="/">Open video source control →</a></aside>
+  </div>
+</main>
+<script>
+const initial={{ settings|tojson }}, OFFSET=8089.5, DOWN_START=10490.5, DOWN_END=10499.5;
+const $=id=>document.getElementById(id), canvas=$('spectrum'), ctx=canvas.getContext('2d'); let frame=null, connected=false, ptt=false;
+$('frequency').value=Number(initial.pluto_frequency_mhz||2405.25).toFixed(3); $('symbolRate').value=initial.pluto_symbol_rate||500; $('fec').value=initial.pluto_fec||'34'; $('power').value=initial.pluto_power_db??-79;
+function updateValues(){const up=Number($('frequency').value),down=up+OFFSET,formatted=`${up.toLocaleString('de-CH',{minimumFractionDigits:3})} MHz`;$('frequencyLabel').textContent=formatted;$('selectedUp').textContent=formatted;$('selectedDown').textContent=`${down.toLocaleString('de-CH',{minimumFractionDigits:3})} MHz`;$('selectedBw').textContent=`${$('symbolRate').value} kS/s`;$('powerValue').textContent=`${$('power').value} dB`;draw()}
+function size(){const d=devicePixelRatio||1,r=canvas.getBoundingClientRect();canvas.width=Math.round(r.width*d);canvas.height=Math.round(r.height*d);ctx.setTransform(d,0,0,d,0,0);draw()}
+function xFor(f,w){return (f-DOWN_START)/(DOWN_END-DOWN_START)*w}
+function allowedCentres(){const step=Number($('symbolRate').value)===125?.25:.5,out=[];for(let f=10492.75;f<=10499.2501;f+=step)out.push(Number(f.toFixed(3)));return out}
+function draw(){
+  const w=canvas.clientWidth,h=canvas.clientHeight,plotBottom=h-84,bandY=h-56,bandH=24;
+  ctx.clearRect(0,0,w,h);ctx.fillStyle='#081019';ctx.fillRect(0,0,w,h);
+  ctx.strokeStyle='#263747';ctx.fillStyle='#8ea2b4';ctx.font='12px system-ui';ctx.textAlign='center';
+  for(let i=0;i<=18;i++){const x=i*w/18,f=DOWN_START+i*.5;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,plotBottom);ctx.stroke();ctx.fillText(f.toFixed(1),x,h-10)}
+  for(let i=1;i<5;i++){const y=i*plotBottom/5;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}
+  if(frame){
+    const grad=ctx.createLinearGradient(0,0,0,plotBottom);grad.addColorStop(0,'#ff405d');grad.addColorStop(.24,'#ff7a45');grad.addColorStop(.5,'#a84ed8');grad.addColorStop(.76,'#37b8dc');grad.addColorStop(1,'#126b91');ctx.fillStyle=grad;ctx.beginPath();ctx.moveTo(0,plotBottom);
+    for(let x=0;x<w;x++){const p=x/w*(frame.length-1),i=Math.floor(p),v=(frame[i]+(frame[Math.min(i+1,frame.length-1)]-frame[i])*(p-i))/65536,y=plotBottom-Math.min(v,1)*plotBottom;ctx.lineTo(x,y)}
+    ctx.lineTo(w,plotBottom);ctx.closePath();ctx.fill();ctx.strokeStyle='#d9f4ff99';ctx.lineWidth=1;ctx.stroke()
+  }
+  const narrow=Number($('symbolRate').value)===125,barWidth=(narrow?.125:.333)*1.35;
+  for(const centre of allowedCentres()){const left=xFor(centre-barWidth/2,w),right=xFor(centre+barWidth/2,w);ctx.fillStyle=narrow?'#48d8a8':'#43c7e8';ctx.fillRect(left,plotBottom+6,right-left,6)}
+  ctx.fillStyle='#132a36';ctx.fillRect(xFor(10492,w),bandY,xFor(10497.5,w)-xFor(10492,w),bandH);ctx.fillStyle='#173629';ctx.fillRect(xFor(10497.5,w),bandY,xFor(10499.5,w)-xFor(10497.5,w),bandH);ctx.fillStyle='#a9bac7';ctx.fillText('Wide & narrow DATV',xFor(10494.75,w),bandY+16);ctx.fillText('Narrow DATV',xFor(10498.5,w),bandY+16);
+  const centre=Number($('frequency').value)+OFFSET,bw=Number($('symbolRate').value)/1000*1.35,left=xFor(centre-bw/2,w),right=xFor(centre+bw/2,w);ctx.fillStyle='#46c7e826';ctx.fillRect(left,0,right-left,plotBottom);ctx.strokeStyle='#46c7e8';ctx.lineWidth=2;ctx.strokeRect(left,1,right-left,plotBottom-2);ctx.lineWidth=1
+}
+canvas.addEventListener('click',e=>{const r=canvas.getBoundingClientRect(),down=DOWN_START+(e.clientX-r.left)/r.width*(DOWN_END-DOWN_START),centres=allowedCentres();if(down<10492.5||down>10499.5){$('feed').textContent='That area is not allocated for user DATV';setTimeout(()=>{$('feed').innerHTML='<span class="live">● Live BATC FFT</span>'},1800);return}const slot=centres.reduce((best,f)=>Math.abs(f-down)<Math.abs(best-down)?f:best,centres[0]),up=slot-OFFSET;$('frequency').value=up.toFixed(3);updateValues()});
+function connect(){try{const ws=new WebSocket('wss://eshail.batc.org.uk/wb/fft','fft_f5oeoplutofw');ws.binaryType='arraybuffer';ws.onopen=()=>{connected=true;$('feed').innerHTML='<span class="live">● Live BATC FFT</span>'};ws.onmessage=e=>{frame=new Uint16Array(e.data);draw()};ws.onclose=()=>{connected=false;$('feed').textContent='Reconnecting to BATC FFT…';setTimeout(connect,1000)};ws.onerror=()=>ws.close()}catch(e){$('feed').textContent='Spectrum feed unavailable'}}
+async function post(path,body){$('error').textContent='';const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Request failed');return d}
+$('apply').onclick=async()=>{try{$('apply').disabled=true;await post('/api/pluto/rf-config',{frequency_mhz:Number($('frequency').value),symbol_rate:Number($('symbolRate').value),fec:$('fec').value,power_db:Number($('power').value)});ptt=false;await refresh()}catch(e){$('error').textContent=e.message}finally{$('apply').disabled=false}};
+$('ptt').onclick=async()=>{try{$('ptt').disabled=true;await post('/api/pluto/ptt',{enabled:!ptt});ptt=!ptt;await refresh()}catch(e){$('error').textContent=e.message}finally{$('ptt').disabled=false}};
+async function refresh(){try{const d=await fetch('/api/pluto/status').then(r=>r.json()),s=d.settings,p=d.pluto;ptt=!!p.ptt;$('address').textContent=s.pluto_ip;$('pttState').textContent=ptt?'ON AIR':'Standby';$('currentFrequency').textContent=`${Number(s.pluto_frequency_mhz).toFixed(3)} MHz`;$('mode').textContent=`DVB-S2 · ${s.pluto_symbol_rate} kS/s · FEC ${s.pluto_fec[0]}/${s.pluto_fec[1]}`;$('buffer').textContent=p.buffer||'—';$('state').textContent=p.reachable?(ptt?'ON AIR':'Pluto ready'):'Pluto unavailable';$('dot').className='dot '+(p.reachable?(ptt?'onair':'ready'):'');$('ptt').textContent=ptt?'Disable PTT':'Enable PTT';$('ptt').classList.toggle('stop',ptt)}catch(e){$('state').textContent='Control unavailable'}}
+['frequency','symbolRate','fec','power'].forEach(id=>$(id).addEventListener('input',updateValues));window.addEventListener('resize',size);size();updateValues();connect();refresh();setInterval(refresh,2500);
+$('symbolRate').addEventListener('change',()=>{const down=Number($('frequency').value)+OFFSET,centres=allowedCentres(),slot=centres.reduce((best,f)=>Math.abs(f-down)<Math.abs(best-down)?f:best,centres[0]);$('frequency').value=(slot-OFFSET).toFixed(3);updateValues()});
+</script></body></html>
