@@ -1,18 +1,7 @@
-# IDE / editor
+old_project_TO_DELETE/
 .idea/
 .claude/settings.local.json
-
-# Logs, pids, runtime state
 *.log
 *.pid
-state.json
-
-# Backups / scratch
-*.bak
-*.bak-*
-
-# Generated / media assets (large binaries)
-generated-assets/
-videos/
-soundtracks/
-testcards/
+__pycache__/
+*.pyc
