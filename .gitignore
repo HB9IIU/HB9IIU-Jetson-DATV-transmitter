@@ -5,3 +5,10 @@ old_project_TO_DELETE/
 *.pid
 __pycache__/
 *.pyc
+
+# Pluto firmware flashing files (large binaries, not project source)
+plutosdr-fw-*/
+sdimg/
+
+# DATV-Red app downloads (reference/companion tool, not project source)
+DATV-Red*/

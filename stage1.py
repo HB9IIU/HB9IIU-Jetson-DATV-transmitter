@@ -1,8 +1,9 @@
 """Stage 1: same as stage0, but the video source is a real camera instead
 of a generated test pattern. Detects connected cameras and asks which one
-to use.
+to use. The USB webcam path also includes audio from its built-in
+microphone (the CSI camera has no microphone, so that path stays video-only).
 
-[camera] -> [Jetson hardware encoder] -> [network: UDP] -> [your PC / VLC]
+[camera (+ mic for USB)] -> [Jetson hardware encoder] -> [network: UDP] -> [your PC / VLC]
 """
 
 import argparse
@@ -11,6 +12,8 @@ import subprocess
 from typing import List, Tuple
 
 FPS = 25
+AUDIO_DEVICE = "plughw:2,0"  # Logitech C920 built-in microphone
+AUDIO_BITRATE_KBPS = 48
 
 
 def detect_cameras() -> List[Tuple[str, str]]:
@@ -57,6 +60,10 @@ def build_csi_pipeline(host: str, port: int, bitrate_kbps: int, sensor_id: int,
 def build_usb_pipeline(device: str, host: str, port: int, bitrate_kbps: int) -> List[str]:
     return [
         "gst-launch-1.0", "-e",
+        "mpegtsmux", "name=mux", "alignment=7", "!",
+        "udpsink", f"host={host}", f"port={port}",
+        "sync=true", "async=false", "buffer-size=1048576",
+
         "v4l2src", f"device={device}", "do-timestamp=true", "!",
         f"image/jpeg,width=1280,height=720,framerate=30/1", "!",
         "jpegdec", "!",
@@ -67,10 +74,14 @@ def build_usb_pipeline(device: str, host: str, port: int, bitrate_kbps: int) -> 
         "nvv4l2h265enc", f"bitrate={bitrate_kbps * 1000}", "insert-sps-pps=true",
         f"iframeinterval={FPS}", "!",
         "h265parse", "config-interval=1", "!",
-        "queue", "!",
-        "mpegtsmux", "alignment=7", "!",
-        "udpsink", f"host={host}", f"port={port}",
-        "sync=true", "async=false", "buffer-size=1048576",
+        "queue", "!", "mux.",
+
+        "alsasrc", f"device={AUDIO_DEVICE}", "!",
+        "audioconvert", "!", "audioresample", "!", "audiorate", "!",
+        "audio/x-raw,format=S16LE,rate=48000,channels=1", "!",
+        "voaacenc", f"bitrate={AUDIO_BITRATE_KBPS * 1000}", "!",
+        "aacparse", "!",
+        "queue", "!", "mux.",
     ]
 
 
