@@ -20,7 +20,7 @@ import paho.mqtt.client as mqtt
 import paramiko
 
 # ---- Settings - edit these directly ----
-CAMERA_DEVICE = "/dev/video1"  # Logitech C920 USB webcam
+CAMERA_DEVICE = "/dev/video0"  # Logitech C920 USB webcam
 CALLSIGN = "HB9IIU"
 FREQUENCY_HZ = 2405000000
 SYMBOL_RATE = 333000
@@ -115,7 +115,9 @@ def configure_pluto(mqtt_client, ip, callsign):
     publish(mqtt_client, callsign, "tx/dvbs2/gainvariable", "0")
     publish(mqtt_client, callsign, "tx/dvbs2/fecrange", 10)
     publish(mqtt_client, callsign, "tx/dvbs2/tssourcemode", "0")
-    publish(mqtt_client, callsign, "tx/dvbs2/digitalgain", 0)
+    # Do not publish tx/dvbs2/digitalgain on this PlutoDVB2 build. Confirmed
+    # via a direct, RF-muted MQTT diagnostic: this command disconnects the
+    # broker client and resets the modulator SR to its 1000000 boot value.
     publish(mqtt_client, callsign, "tx/dvbs2/firfilter", "1")
     publish(mqtt_client, callsign, "tx/dvbs2/tssourceaddress",
             "{}:{}".format(ip, PLUTO_TS_PORT))

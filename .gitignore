@@ -12,3 +12,12 @@ sdimg/
 
 # DATV-Red app downloads (reference/companion tool, not project source)
 DATV-Red*/
+
+# PlutoDVB2 firmware reference source (not project source)
+pluto-ori/
+
+# Scratch/temp files
+tempo/
+
+# Exceeds GitHub's 100MB file size limit - kept locally, not versioned
+original videos/Bunny.avi

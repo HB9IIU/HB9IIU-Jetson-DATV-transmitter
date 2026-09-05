@@ -1,0 +1,36 @@
+TODO - next session
+
+- Do we still need pluto_mqtt_diagnostic.py? Decide: keep+polish (update its
+  TESTS list to match the corrected configure_pluto(), including
+  tx/stream/mode) vs delete now that the real bug is found and fixed.
+- datv_tx.py probably no longer required (datv_tx_plus.py now works and
+  supersedes it) - confirm and remove if so.
+- rf_hardware_test.py: make a better version (currently just steps TX LO
+  frequency for a visible LO-leakage peak; consider proper DDS tone once
+  the right cf-ad9361-dds-core-lpc attribute names are found, since the
+  first attempt's attribute writes silently failed).
+
+Carried over from tonight's discussion, not yet done:
+- Audit configure_pluto() in datv_tx_plus.py line-by-line against
+  pluto-ori/initdvb.sh (the firmware's own reference script) to check for
+  any other missing/misordered commands beyond the tx/stream/mode fix.
+- Update pluto_mqtt_diagnostic.py's TESTS list once the audit above is done
+  (currently stale: missing tx/stream/mode, still "tests" digitalgain as if
+  it were normal instead of flagging it as known-broken).
+- Resume the file-by-file project cleanup pass (paused mid-way):
+    - _debug_datv_tx_plus.py, pluto_mqtt_diagnostic.py (pending decision
+      above), __pycache__/ - my temp/debug leftovers from tonight
+    - caca.py - recovered test file, decide keep or delete
+    - XXXXXXXXXXX/ - oddly-named placeholder folder, check contents
+    - plutosdr-fw-0.5.16.7/, plutosdr-fw-PlutoDVB2_0.5.16.7/, pluto-ori/,
+      DATV-Red-Source/, DATV-Red-v4.9-4/ - check for overlap/redundancy
+    - old_project_TO_DELETE/ - already marked, just do it
+    - stage0.py, stage1.py - likely superseded, confirm and remove
+- Flask web control/monitor page on the Jetson (discussed tonight):
+    - Backend: Flask + persistent paho-mqtt client to the Pluto, reusing
+      configure_pluto()/telemetry logic from datv_tx_plus.py
+    - Frontend: monitor panel (poll /telemetry every 1-2s: SR, freq, gain,
+      mute, queue, temperature) + test panel (publish individual
+      cmd/pluto/... commands, see echoed dt/pluto/... response - basically
+      pluto_mqtt_diagnostic.py's logic with a UI)
+    - Safety: LAN-only binding, confirmation before anything that keys PTT
