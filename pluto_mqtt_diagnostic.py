@@ -12,7 +12,7 @@ import time
 import paho.mqtt.client as mqtt
 
 
-PLUTO_IP = "192.168.0.50"
+PLUTO_IP = "192.168.2.1"
 MQTT_PORT = 1883
 MQTT_USERNAME = "root"
 MQTT_PASSWORD = "analog"
@@ -22,13 +22,30 @@ COMMAND_PREFIX = "cmd/pluto/{}/".format(CALLSIGN)
 TELEMETRY_PREFIX = "dt/pluto/{}/".format(CALLSIGN)
 TARGET_SR = "333000"
 ACK_TIMEOUT_SECONDS = 5.0
+# DATV-Red's Node-RED flow (the reference PC-side controller for this
+# firmware) has a dedicated "delay restore after MODE set" node that waits
+# before resending the rest of the config after a tx/stream/mode change.
+# Its delay node uses pauseType "delay" with timeout 0.5s (the randomFirst/
+# randomLast fields on that node only apply under pauseType "random", so
+# they don't affect its actual behavior). Mirrored here for the same reason
+# DATV-Red has it: give the modulator time to settle after a mode switch
+# before sending anything else.
+MODE_SWITCH_SETTLE_SECONDS = 0.5
 
-# These are exactly the MQTT settings used by datv_tx_plus.py. RF remains
-# muted throughout. SR is deliberately tested again after every command so a
+# These are exactly the MQTT settings used by datv_tx_plus.py's
+# configure_pluto() (commit 7d16f2a), in the same order. RF remains muted
+# throughout. SR is deliberately tested again after every command so a
 # command that resets the DVB-S2 modulator to its 1000000 boot value is caught.
+#
+# tx/dvbs2/digitalgain was suspected of disconnecting the broker (rc=16,
+# MQTT_ERR_KEEPALIVE) and resetting SR, based on one earlier run. 4/4 repeat
+# runs on 2026-09-06 passed cleanly, so that looks like a one-off client-side
+# keepalive timeout rather than a firmware defect. Back in the normal
+# sequence; the SR check after every test still catches it if it recurs.
 TESTS = [
+    ("tx/stream/mode", "dvbs2-ts"),
     ("tx/frequency", "2405000000"),
-    ("tx/gain", "0"),
+    ("tx/gain", "-10"),
     ("tx/dvbs2/sr", TARGET_SR),
     ("tx/dvbs2/fecmode", "fixed"),
     ("tx/dvbs2/fec", "3/4"),
@@ -40,7 +57,7 @@ TESTS = [
     ("tx/dvbs2/tssourcemode", "0"),
     ("tx/dvbs2/digitalgain", "0"),
     ("tx/dvbs2/firfilter", "1"),
-    ("tx/dvbs2/tssourceaddress", "192.168.0.50:8282"),
+    ("tx/dvbs2/tssourceaddress", "{}:8282".format(PLUTO_IP)),
 ]
 
 
@@ -145,6 +162,11 @@ def main():
             if not ok:
                 print("\nFAILED AT {}: {}".format(key, reason))
                 break
+
+            if key == "tx/stream/mode":
+                print("Settling {}s after mode switch (as DATV-Red does)...".
+                      format(MODE_SWITCH_SETTLE_SECONDS), flush=True)
+                time.sleep(MODE_SWITCH_SETTLE_SECONDS)
 
             # Do not rewrite SR after the SR test itself: observe whether the
             # command just tested made Pluto fall back to its boot-time SR.

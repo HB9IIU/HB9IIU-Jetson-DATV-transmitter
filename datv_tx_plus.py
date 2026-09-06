@@ -32,12 +32,18 @@ venv (it needs system packages), so the venv's pyvenv.cfg has
 `include-system-site-packages = true` to let it see the system-installed
 gi/GStreamer bindings alongside its own pip-installed paho-mqtt/paramiko.
 
-Includes the same real hardware bugs/fixes proven in datv_tx.py:
-- tx/mute over MQTT alone doesn't reliably power up the TX local
-  oscillator on this firmware; PTT is done via direct sysfs control too.
-- nvv4l2h265enc needs an explicit iframeinterval or the picture can freeze.
+Includes a real hardware fix proven in datv_tx.py: nvv4l2h265enc needs an
+explicit iframeinterval or the picture can freeze.
 
-MQTT and SSH both use the Pluto's default credentials: root/analog.
+PTT is MQTT tx/mute only. An earlier version also SSHed in to directly
+power the TX LO down/up via sysfs, on the assumption that tx/mute alone
+wasn't reliable - never actually verified (no repro recorded), and
+contradicted by DATV-Red (the reference PC-side controller for this same
+firmware), which mutes over MQTT alone. That SSH path is kept in reserve
+(ssh_connect()/set_tx_lo_powerdown(), unused) in case real RF measurement
+ever shows MQTT-only muting is insufficient.
+
+MQTT uses the Pluto's default credentials: root/analog.
 """
 
 import os
@@ -57,6 +63,19 @@ os.environ["TZ"] = "UTC"  # clockoverlay has no UTC option, only local time
 time.tzset()
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+START_TIME = time.monotonic()
+
+
+def log(message=""):
+    # Piped/redirected stdout (SSH, a log file, systemd) is fully buffered
+    # by default, so this would otherwise sit invisible until the buffer
+    # filled or the process exited cleanly - and be lost entirely on a
+    # SIGTERM/SIGKILL. flush=True forces it out immediately. (Can't use
+    # sys.stdout.reconfigure(line_buffering=True) instead - that needs
+    # Python 3.7+, and this runs under the Jetson's 3.6 venv.)
+    print("[{:.0f}ms] {}".format((time.monotonic() - START_TIME) * 1000, message),
+          flush=True)
 
 # ---- Profiles - add more here later (e.g. "sr333_fec45") the same way ----
 PROFILES = {
@@ -79,7 +98,7 @@ PROFILES = {
 }
 
 # ---- Settings - edit these directly ----
-PROFILE = "sr333_fec34"
+PROFILE = "sr500_fec34_720p"
 SOURCE = "video"  # "camera" (live cam+mic) or "video" (pick+loop a pre-processed video)
 TX_OUTPUT = "pluto"  # "pluto" (transmit) or "file" (write the muxed TS to TX_OUTPUT_FILE for local inspection, no Pluto/MQTT needed)
 TX_OUTPUT_FILE = "debug_output.ts"
@@ -89,7 +108,7 @@ CALLSIGN = "HB9IIU"
 FREQUENCY_HZ = 2405000000
 FRAME = "long"
 PILOTS = True
-GAIN_DB = -10 # 0 was confirmed to produce zero RF output in a raw hardware test; -10 produced a visible signal
+GAIN_DB = -20 # 0 was confirmed to produce zero RF output in a raw hardware test; -10 produced a visible signal
 TITLE_TEXT = "Jetson Nano - Standalone Hardware H.265 DVB-S2 Encoder"
 TOP_BAR_HEIGHT = 45
 TOP_BAR_ALPHA = 0.5
@@ -111,19 +130,35 @@ USB_DEFAULT_IP = "192.168.2.1"
 FORCE_USB = True  # Skip Ethernet/mDNS entirely and connect via the Pluto's USB interface
 CPU_THERMAL_ZONE_PATH = "/sys/devices/virtual/thermal/thermal_zone1/temp"  # Jetson CPU-therm
 TELEMETRY_UPDATE_SECONDS = 2.0
+# When SOURCE == "video", detect the file ending by polling its own position
+# vs. duration instead of waiting for a pipeline-level EOS message: this
+# pipeline mixes the file's decoded video with two always-live videotestsrc
+# bars in a compositor, and an aggregator-style element only forwards EOS
+# once *all* its sink pads have seen it - the live bars never do, so a real
+# end-of-file EOS never reaches the bus, and the transmission would
+# otherwise hang forever on a frozen last frame instead of stopping
+# (confirmed on real hardware/receiver on 2026-09-06). Must be bigger than
+# TELEMETRY_UPDATE_SECONDS so the poll loop always catches it in time.
+VIDEO_END_MARGIN_SECONDS = 3.0
 TS_BITRATE_WAIT_SECONDS = 30.0
 PLUTO_CONFIG_RETRY_SECONDS = 2.0
 CBR_RELAY_PORT = 18282
+# DATV-Red (the reference PC-side controller for this firmware) waits after
+# a tx/stream/mode change before resending the rest of the config - see its
+# "delay restore after MODE set" node (pauseType "delay", timeout 0.5s).
+# Mirrored here for the same reason: give the modulator time to settle
+# after the mode switch before sending the rest of the DVB-S2 parameters.
+MODE_SWITCH_SETTLE_SECONDS = 0.5
 
 
 def discover_pluto_ip():
-    print("Looking for the Pluto...")
+    log("📡 Looking for the Pluto...")
     candidates = []
     if FORCE_USB:
         # Skip mDNS entirely - it would still find and prefer a flaky
         # Ethernet address if that interface responds at all, defeating
         # the point of forcing USB.
-        print("  FORCE_USB is set - skipping Ethernet/mDNS discovery.")
+        log("   FORCE_USB is set - skipping Ethernet/mDNS discovery.")
     else:
         try:
             result = subprocess.run(
@@ -142,11 +177,11 @@ def discover_pluto_ip():
     for address in candidates:
         try:
             with socket.create_connection((address, IIOD_PORT), timeout=1.0):
-                print("  Found Pluto at {}".format(address))
+                log("   ✅ Found Pluto at {}".format(address))
                 return address
         except OSError:
             continue
-    raise SystemExit("No PlutoSDR found (checked mDNS and USB default). "
+    raise SystemExit("❌ No PlutoSDR found (checked mDNS and USB default). "
                       "Is it powered on and connected?")
 
 
@@ -164,7 +199,7 @@ def mqtt_connect(ip):
 def publish(client, callsign, subtopic, payload):
     topic = "cmd/pluto/{}/{}".format(callsign, subtopic)
     client.publish(topic, payload=str(payload), qos=1)
-    print("  {} -> {}".format(topic, payload))
+    log("   📤 {} -> {}".format(topic, payload))
 
 
 def subscribe_telemetry(mqtt_client, callsign, telemetry):
@@ -230,7 +265,7 @@ def configure_pluto_until_ready(mqtt_client, ip, callsign, profile, telemetry):
     while time.monotonic() < deadline:
         attempt += 1
         telemetry.pop("tx/dvbs2/sr", None)
-        print("Configuring DVB-S2 modulator (attempt {})...".format(attempt))
+        log("⚙️  Configuring DVB-S2 modulator (attempt {})...".format(attempt))
         configure_pluto(mqtt_client, ip, callsign, profile)
 
         attempt_deadline = min(
@@ -245,15 +280,15 @@ def configure_pluto_until_ready(mqtt_client, ip, callsign, profile, telemetry):
                 bitrate = calculate_dvbs2_ts_bitrate(profile)
                 # Reuse the overlay's existing field with our exact local value.
                 telemetry["tx/dvbs2/ts/bitrate"] = str(bitrate)
-                print("  Pluto acknowledged SR={} and TS capacity={} bit/s".format(
+                log("   ✅ Pluto acknowledged SR={} and TS capacity={} bit/s".format(
                     reported_sr, bitrate))
                 return bitrate
             time.sleep(0.05)
 
-        print("  Pluto controller not ready or did not acknowledge; retrying...")
+        log("   ⏳ Pluto controller not ready or did not acknowledge; retrying...")
 
     raise RuntimeError(
-        "Pluto MQTT controller did not acknowledge configuration within {:.0f}s; "
+        "❌ Pluto MQTT controller did not acknowledge configuration within {:.0f}s; "
         "RF remains muted".format(TS_BITRATE_WAIT_SECONDS))
 
 
@@ -284,23 +319,41 @@ def start_cbr_relay(pluto_ip, ts_bitrate):
         "-mpegts_flags", "+system_b", "-flush_packets", "0",
         "-f", "mpegts", output_url,
     ]
-    print("Starting CBR relay at {} bit/s...".format(ts_bitrate))
+    log("🎞️  Starting CBR relay at {} bit/s...".format(ts_bitrate))
     return subprocess.Popen(command)
 
 
-def set_tx_lo_powerdown(ip, powered_down):
+def ssh_connect(ip):
+    """In reserve, currently unused - see set_tx_lo_powerdown()."""
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(ip, username=SSH_USERNAME, password=SSH_PASSWORD, timeout=8)
+    # look_for_keys/allow_agent default to True, which makes paramiko hunt
+    # through local SSH keys and an agent before trying the password below -
+    # pure overhead here since this always authenticates by password.
+    ssh.connect(ip, username=SSH_USERNAME, password=SSH_PASSWORD, timeout=8,
+                look_for_keys=False, allow_agent=False)
+    return ssh
+
+
+def set_tx_lo_powerdown(ssh, powered_down):
+    """In reserve, currently unused.
+
+    This direct sysfs write was added on the assumption that MQTT tx/mute
+    alone doesn't reliably power the TX LO down/up on this firmware - a
+    claim never actually verified (no repro recorded anywhere), and
+    contradicted by DATV-Red, the reference PC-side controller for this
+    same firmware, which mutes over MQTT alone with no SSH/sysfs step at
+    all. set_ptt() no longer calls this. Wire it back in (pass an
+    ssh_connect()'d client through) if real RF measurement ever shows
+    MQTT-only muting is insufficient.
+    """
     value = "1" if powered_down else "0"
     ssh.exec_command("echo {} > {}".format(value, TX_LO_POWERDOWN_PATH))
-    ssh.close()
 
 
-def set_ptt(mqtt_client, ip, callsign, on):
+def set_ptt(mqtt_client, callsign, on):
     publish(mqtt_client, callsign, "tx/mute", "0" if on else "1")
-    set_tx_lo_powerdown(ip, powered_down=not on)
-    print("PTT {}".format("ON" if on else "OFF"))
+    log("🔊 PTT ON" if on else "🔇 PTT OFF")
 
 
 def configure_pluto(mqtt_client, ip, callsign, profile):
@@ -308,9 +361,9 @@ def configure_pluto(mqtt_client, ip, callsign, profile):
     # it defaults to (e.g. "test" - a bare, unmodulated carrier) regardless
     # of how correctly every tx/dvbs2/* parameter below is configured. This
     # is the actual mode switch that makes it modulate real DVB-S2 data at
-    # all - confirmed in the reference PlutoDVB2 source (pluto-ori), never
-    # previously sent by this script.
+    # all - confirmed in the reference PlutoDVB2 source (pluto-ori).
     publish(mqtt_client, callsign, "tx/stream/mode", "dvbs2-ts")
+    time.sleep(MODE_SWITCH_SETTLE_SECONDS)
     publish(mqtt_client, callsign, "tx/frequency", FREQUENCY_HZ)
     publish(mqtt_client, callsign, "tx/gain", GAIN_DB)
     publish(mqtt_client, callsign, "tx/dvbs2/sr", profile["symbol_rate"])
@@ -322,9 +375,11 @@ def configure_pluto(mqtt_client, ip, callsign, profile):
     publish(mqtt_client, callsign, "tx/dvbs2/gainvariable", "0")
     publish(mqtt_client, callsign, "tx/dvbs2/fecrange", 10)
     publish(mqtt_client, callsign, "tx/dvbs2/tssourcemode", "0")
-    # Do not publish tx/dvbs2/digitalgain on PlutoDVB2 0.5.16.7. A direct,
-    # RF-muted MQTT diagnostic proved that this command disconnects the broker
-    # client and resets the modulator SR to its 1000000 boot value.
+    # tx/dvbs2/digitalgain=0 was suspected of disconnecting the broker and
+    # resetting SR, based on one earlier run. 5/5 repeat runs on 2026-09-06
+    # (via pluto_mqtt_diagnostic.py) passed cleanly, and every real DATV-Red
+    # profile (p1-p7) ships digitalgain=0 too, so it's back in the sequence.
+    publish(mqtt_client, callsign, "tx/dvbs2/digitalgain", "0")
     publish(mqtt_client, callsign, "tx/dvbs2/firfilter", "1")
     publish(mqtt_client, callsign, "tx/dvbs2/tssourceaddress",
             "{}:{}".format(ip, PLUTO_TS_PORT))
@@ -487,10 +542,19 @@ def build_pipeline_description(ip, profile, source_path=None):
     return " ".join(parts)
 
 
+def print_banner():
+    line = "=" * 62
+    print(line)
+    print("   🛰️   {}  —  DATV-Plus QO-100 DVB-S2 Transmitter".format(CALLSIGN))
+    print("   📡  {:.3f} MHz".format(FREQUENCY_HZ / 1e6))
+    print(line)
+
+
 def main():
+    print_banner()
     profile = PROFILES[PROFILE]
     width, height = profile["resolution"]
-    print("Profile '{}': SR={} FEC={} {}x{} video={}kbps audio={}kbps".format(
+    log("🎛️  Profile '{}': SR={} FEC={} {}x{} video={}kbps audio={}kbps".format(
         PROFILE, profile["symbol_rate"], profile["fec"], width, height,
         profile["video_bitrate_kbps"], profile["audio_bitrate_kbps"]))
 
@@ -509,30 +573,33 @@ def main():
             # Listen for state acknowledgements before issuing commands.
             subscribe_telemetry(mqtt_client, CALLSIGN, telemetry)
 
-            print("Muting RF before configuring (safety)...")
-            set_ptt(mqtt_client, pluto_ip, CALLSIGN, on=False)
+            log("🔇 Muting RF before configuring (safety)...")
+            set_ptt(mqtt_client, CALLSIGN, on=False)
 
-            print("Waiting for Pluto MQTT control on {} ({})...".format(
+            log("⏳ Waiting for Pluto MQTT control on {} ({})...".format(
                 pluto_ip, CALLSIGN))
             ts_bitrate = configure_pluto_until_ready(
                 mqtt_client, pluto_ip, CALLSIGN, profile, telemetry)
             cbr_relay = start_cbr_relay(pluto_ip, ts_bitrate)
 
         pipeline_description = build_pipeline_description(pluto_ip, profile, source_path)
-        print("Starting video stream...")
+        log("🎬 Starting video stream...")
         gst_pipeline = Gst.parse_launch(pipeline_description)
         telemetry_overlay = gst_pipeline.get_by_name("telemetry_overlay")
+        # Only exists when SOURCE == "video" (see build_pipeline_description).
+        video_source = gst_pipeline.get_by_name("filesrc")
         bus = gst_pipeline.get_bus()
         gst_pipeline.set_state(Gst.State.PLAYING)
 
         if to_pluto:
-            print("Keying up...")
-            set_ptt(mqtt_client, pluto_ip, CALLSIGN, on=True)
+            log("🔊 Keying up...")
+            set_ptt(mqtt_client, CALLSIGN, on=True)
             print()
-            print("TRANSMITTING on {:.3f} MHz. Press Ctrl+C to stop.".format(FREQUENCY_HZ / 1e6))
+            log("🚀 TRANSMITTING on {:.3f} MHz, SR={} FEC={}. Press Ctrl+C to stop.".format(
+                FREQUENCY_HZ / 1e6, profile["symbol_rate"], profile["fec"]))
         else:
             print()
-            print("Writing to '{}'. Press Ctrl+C to stop.".format(TX_OUTPUT_FILE))
+            log("💾 Writing to '{}'. Press Ctrl+C to stop.".format(TX_OUTPUT_FILE))
         while True:
             message = bus.timed_pop_filtered(
                 int(TELEMETRY_UPDATE_SECONDS * Gst.SECOND),
@@ -541,14 +608,21 @@ def main():
                 if message.type == Gst.MessageType.ERROR:
                     error, debug = message.parse_error()
                     raise RuntimeError("GStreamer error: {} ({})".format(error, debug))
-                break  # EOS
+                break  # EOS - the video finished; transmission ends here.
+            if video_source is not None:
+                ok_dur, duration = video_source.query_duration(Gst.Format.TIME)
+                ok_pos, position = video_source.query_position(Gst.Format.TIME)
+                if (ok_dur and ok_pos and duration > 0
+                        and position >= duration - VIDEO_END_MARGIN_SECONDS * Gst.SECOND):
+                    log("🏁 Video finished; transmission ends here.")
+                    break
             if telemetry_overlay is not None:
                 telemetry_overlay.set_property("text", format_telemetry(telemetry))
     except KeyboardInterrupt:
         pass
     finally:
         print()
-        print("Stopping...")
+        log("🛑 Stopping...")
         if gst_pipeline is not None:
             gst_pipeline.set_state(Gst.State.NULL)
         if cbr_relay is not None:
@@ -559,15 +633,15 @@ def main():
                 cbr_relay.kill()
         if to_pluto:
             try:
-                set_ptt(mqtt_client, pluto_ip, CALLSIGN, on=False)
-                print("Stopped. PTT OFF.")
+                set_ptt(mqtt_client, CALLSIGN, on=False)
+                log("✅ Stopped. PTT OFF.")
             except Exception as exc:
-                print("  WARNING: could not confirm PTT OFF ({}) - "
-                      "check the Pluto directly!".format(exc))
+                log("⚠️  WARNING: could not confirm PTT OFF ({}) - "
+                    "check the Pluto directly!".format(exc))
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
         else:
-            print("Stopped. Wrote '{}'.".format(TX_OUTPUT_FILE))
+            log("✅ Stopped. Wrote '{}'.".format(TX_OUTPUT_FILE))
 
 
 if __name__ == "__main__":
