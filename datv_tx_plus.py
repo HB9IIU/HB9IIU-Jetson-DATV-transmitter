@@ -4,13 +4,9 @@ instead of one fixed configuration, plus a live telemetry overlay. Select
 which profile is active by editing PROFILE below - still no command-line
 arguments.
 
-Profile values (resolution/bitrate per symbol rate/FEC) come from real
-quality testing done with a local test movie file, not guesses: 960x540
-was found to look noticeably better than 1280x720 at the same bitrate
-(fewer compression mosaics on motion), and lower symbol rates get a lower
-resolution to match their smaller bitrate budget. Add more profiles
-(e.g. "sr333_fec45") to the PROFILES dict below the same way - no other
-code needs to change.
+Profile table (PROFILES, FRAME, PILOTS, and the DVB-S2 capacity formula) now
+lives in dvbs2_profiles.py, shared with datv_tx_plus_fft.py - see that
+module for how/why. Edit profiles there, not here.
 
 Overlays on the video:
 - UTC clock (top-right) and callsign (top-left). The Jetson's system
@@ -47,7 +43,6 @@ MQTT uses the Pluto's default credentials: root/analog.
 """
 
 import os
-import math
 import socket
 import subprocess
 import time
@@ -58,6 +53,8 @@ import paramiko
 
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402  (must follow gi.require_version)
+
+from dvbs2_profiles import PROFILES, FRAME, PILOTS, calculate_dvbs2_ts_bitrate
 
 os.environ["TZ"] = "UTC"  # clockoverlay has no UTC option, only local time
 time.tzset()
@@ -77,44 +74,60 @@ def log(message=""):
     print("[{:.0f}ms] {}".format((time.monotonic() - START_TIME) * 1000, message),
           flush=True)
 
-# ---- Profiles - add more here later (e.g. "sr333_fec45") the same way ----
-PROFILES = {
-    "sr250_fec23": {"symbol_rate": 250000, "fec": "2/3", "resolution": (640, 360),
-                    "video_bitrate_kbps": 220, "audio_bitrate_kbps": 32},
-    "sr250_fec34": {"symbol_rate": 250000, "fec": "3/4", "resolution": (640, 360),
-                    "video_bitrate_kbps": 250, "audio_bitrate_kbps": 32},
-    "sr333_fec23": {"symbol_rate": 333000, "fec": "2/3", "resolution": (960, 540),
-                    "video_bitrate_kbps": 305, "audio_bitrate_kbps": 32},
-    "sr333_fec34": {"symbol_rate": 333000, "fec": "3/4", "resolution": (960, 540),
-                    "video_bitrate_kbps": 300, "audio_bitrate_kbps": 32},
-    "sr500_fec23": {"symbol_rate": 500000, "fec": "2/3", "resolution": (960, 540),
-                    "video_bitrate_kbps": 550, "audio_bitrate_kbps": 32},
-    "sr500_fec34": {"symbol_rate": 500000, "fec": "3/4", "resolution": (960, 540),
-                    "video_bitrate_kbps": 600, "audio_bitrate_kbps": 32},
-    "sr500_fec34_720p": {"symbol_rate": 500000, "fec": "3/4", "resolution": (1280, 720),
-                          "video_bitrate_kbps": 600, "audio_bitrate_kbps": 32},
-    "sr500_fec23_720p": {"symbol_rate": 500000, "fec": "2/3", "resolution": (1280, 720),
-                          "video_bitrate_kbps": 550, "audio_bitrate_kbps": 32},
-}
-
 # ---- Settings - edit these directly ----
+
+
+PROFILE = "sr333_fec34"
+PROFILE = "sr250_fec34"
 PROFILE = "sr500_fec34_720p"
-SOURCE = "video"  # "camera" (live cam+mic) or "video" (pick+loop a pre-processed video)
+
+SOURCE = "camera"  # "camera" (live cam+mic) or "video" (pick+loop a pre-processed video)
 TX_OUTPUT = "pluto"  # "pluto" (transmit) or "file" (write the muxed TS to TX_OUTPUT_FILE for local inspection, no Pluto/MQTT needed)
 TX_OUTPUT_FILE = "debug_output.ts"
-CAMERA_DEVICE = "/dev/video0"  # Logitech C920 USB webcam
-AUDIO_DEVICE = "plughw:2,0"  # Logitech C920 built-in microphone
+CAMERA_DEVICE = "/dev/video0"  # overwritten by select_camera_device() when SOURCE == "camera"
+CAMERA_IS_CSI = False  # ditto - selects the nvarguscamerasrc branch instead of v4l2src+JPEG
+# nvvidconv's flip-method enum (2026-09-07: this board's imx219 is mounted
+# physically upside down): 0=none, 1=ccw-90, 2=rotate-180, 3=cw-90,
+# 4=h-flip, 5=upper-right-diagonal, 6=v-flip, 7=upper-left-diagonal. Only
+# applied on the CSI path - the USB webcam path doesn't use nvvidconv at
+# capture time, and isn't mounted upside down anyway.
+CSI_FLIP_METHOD = 2
+AUDIO_DEVICE = "plughw:2,0"  # Logitech C920 built-in microphone - independent of which camera is used for video
+# WebRTC's adaptive AGC (webrtcdsp) on the camera mic input - a real debug_output.ts
+# recording (2026-09-07) came out too quiet to use even with the ALSA capture level
+# already near its max (56/60, 93%, checked via `amixer -c 2`), so the fix has to be
+# in the pipeline, not the mixer. Only applies to SOURCE == "camera": pre-recorded
+# video-file audio is already mixed/mastered and doesn't need this.
+MIC_AGC = True
 CALLSIGN = "HB9IIU"
 FREQUENCY_HZ = 2405000000
-FRAME = "long"
-PILOTS = True
-GAIN_DB = -20 # 0 was confirmed to produce zero RF output in a raw hardware test; -10 produced a visible signal
-TITLE_TEXT = "Jetson Nano - Standalone Hardware H.265 DVB-S2 Encoder"
-TOP_BAR_HEIGHT = 45
-TOP_BAR_ALPHA = 0.5
-BOTTOM_BAR_HEIGHT = 30  # = text block height (~18px for "Sans 11" at 96 DPI) + 2x6px margin
-BOTTOM_BAR_ALPHA = 0.5
-BOTTOM_BAR_TEXT_MARGIN = 6  # top/bottom gap around bottom-bar text, in px
+GAIN_DB = -24 # 0 was confirmed to produce zero RF output in a raw hardware test; -10 produced a visible signal
+TITLE_TEXT = "QO-100 DATV — 2020 Jetson Nano 2GB Hardware Encoder"
+
+# Title/top-bar/bottom-bar sizing per resolution, not per profile name:
+# several profiles commonly share a resolution (e.g. sr333 and sr500 both
+# use 960x540) and should look identical. Add an entry here for any new
+# resolution a profile uses - build_pipeline_description() raises a clear
+# error instead of a confusing KeyError if one is missing.
+# bottom_bar_height = text block height (~ bottom_text_font_size * 1.6 px at
+# 96 DPI) + 2x bottom_bar_text_margin. bottom_text_font_size is shared by
+# all three bottom-bar overlays (callsign/clock/telemetry) - they've always
+# used one common size, never varied independently.
+# 960x540's values were the original, visually-confirmed-on-hardware ones;
+# 640x360/1280x720 started as a first pass (2026-09-07) scaled
+# proportionally to width from that baseline (x0.667 / x1.333) - adjust
+# after looking at a real capture at each resolution.
+OVERLAY_STYLES = {
+    (640, 360): {"title_font_size": 10, "top_bar_height": 20, "top_bar_alpha": 0.7,
+                 "bottom_bar_height": 20, "bottom_bar_alpha": 0.6, "bottom_bar_text_margin": 4,
+                 "bottom_text_font_size": 10},
+    (960, 540): {"title_font_size": 10, "top_bar_height": 30, "top_bar_alpha": 0.6,
+                 "bottom_bar_height": 30, "bottom_bar_alpha": 0.6, "bottom_bar_text_margin": 6,
+                 "bottom_text_font_size": 10},
+    (1280, 720): {"title_font_size": 10, "top_bar_height": 40, "top_bar_alpha": 0.6,
+                  "bottom_bar_height": 40, "bottom_bar_alpha": 0.6, "bottom_bar_text_margin": 8,
+                  "bottom_text_font_size": 10},
+}
 # -----------------------------------------
 
 MQTT_PORT = 1883
@@ -185,8 +198,13 @@ def discover_pluto_ip():
                       "Is it powered on and connected?")
 
 
-def mqtt_connect(ip):
-    client = mqtt.Client(client_id="jetson-datv-tx-plus")
+def mqtt_connect(ip, client_id="jetson-datv-tx-plus"):
+    # A distinct client_id per process matters: MQTT brokers silently
+    # disconnect whichever connection is already using a given client_id the
+    # moment a second one connects with the same id - so a read-only viewer
+    # (e.g. telemetry_web.py) reusing this function must pass its own id, or
+    # it would kick this script's live control connection off the broker.
+    client = mqtt.Client(client_id=client_id)
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
     client.connect(ip, MQTT_PORT, keepalive=5)
     # Start the network loop immediately. Previously it was started only
@@ -220,34 +238,6 @@ def subscribe_telemetry(mqtt_client, callsign, telemetry):
     if result != mqtt.MQTT_ERR_SUCCESS:
         raise RuntimeError("Could not subscribe to Pluto telemetry")
     time.sleep(0.25)
-
-
-def calculate_dvbs2_ts_bitrate(profile):
-    """Return exact DVB-S2 QPSK normal-frame TS capacity in bit/s.
-
-    This is the ETSI frame calculation used by the dvbs2rate utility. It
-    deliberately replaces the nonexistent PlutoDVB2 MQTT
-    ``tx/dvbs2/ts/bitrate`` telemetry topic. For example, 500 kS/s, 3/4,
-    long frame and pilots on gives the previously verified 726038 bit/s.
-    """
-    fec_parameters = {
-        "2/3": (2, 3, 10),
-        "3/4": (3, 4, 12),
-    }
-    try:
-        fec_num, fec_den, bch = fec_parameters[profile["fec"]]
-    except KeyError:
-        raise ValueError("Unsupported DVB-S2 FEC for TS calculation: {}".format(
-            profile["fec"]))
-
-    fec_frame_bits = 64800.0
-    modulation_bits = 2.0  # QPSK
-    data_symbols = fec_frame_bits / modulation_bits
-    pilot_symbols = 36.0 if PILOTS else 0.0
-    pilot_blocks = math.ceil(data_symbols / 90.0 / 16.0 - 1.0)
-    frame_symbols = data_symbols + 90.0 + pilot_blocks * pilot_symbols
-    useful_bits = fec_frame_bits * fec_num / fec_den - 16.0 * bch - 80.0
-    return int(profile["symbol_rate"] / frame_symbols * useful_bits)
 
 
 def configure_pluto_until_ready(mqtt_client, ip, callsign, profile, telemetry):
@@ -304,7 +294,10 @@ def start_cbr_relay(pluto_ip, ts_bitrate):
     ``-muxrate`` fills unused capacity with null packets at Pluto's exact
     telemetry-reported rate.
     """
-    input_url = "udp://127.0.0.1:{}?fifo_size=1000000&overrun_nonfatal=1".format(
+    # reuse=1 lets ffmpeg rebind this port immediately even if a just-killed
+    # previous run's socket briefly lingers - without it, a quick stop/start
+    # cycle can fail with "Address already in use".
+    input_url = "udp://127.0.0.1:{}?fifo_size=1000000&overrun_nonfatal=1&reuse=1".format(
         CBR_RELAY_PORT)
     output_url = "udp://{}:{}?pkt_size=1316".format(pluto_ip, PLUTO_TS_PORT)
     command = [
@@ -402,9 +395,9 @@ def format_telemetry(telemetry):
     pluto_temp_str = "{:.1f}°C".format(int(pluto_temp) / 1000.0) if pluto_temp else "--"
     tx_bitrate = telemetry.get("tx/dvbs2/ts/bitrate")
     tx_bitrate_str = "{:.0f}kb/s".format(int(tx_bitrate) / 1000.0) if tx_bitrate else "--"
-    return "Pluto {} {} | Jetson CPU {:.1f}°C {:.0f}%".format(
-        pluto_temp_str, tx_bitrate_str,
-        read_jetson_cpu_temp_c(), read_jetson_cpu_load_percent())
+    return "Jetson CPU {:.1f}°C {:.0f}% | Pluto {} TX {}".format(
+        read_jetson_cpu_temp_c(), read_jetson_cpu_load_percent(),
+        pluto_temp_str, tx_bitrate_str)
 
 
 def select_video_file(profile):
@@ -444,13 +437,95 @@ def select_video_file(profile):
     return video_path
 
 
-def build_pipeline_description(ip, profile, source_path=None):
+def ask_overlay_enabled():
+    """When SOURCE == "video", let the user opt out of the title/callsign/
+    clock/telemetry overlay (e.g. for a clean recording or a quick look at
+    the raw pre-processed file) instead of always burning it in.
+    """
+    while True:
+        choice = input("Enable title/callsign/clock/telemetry overlay? [Y/n]: ").strip().lower()
+        if choice in ("", "y", "yes"):
+            return True
+        if choice in ("n", "no"):
+            return False
+        print("Invalid choice '{}', try again.".format(choice))
+
+
+def select_camera_device():
+    """When SOURCE == "camera", pick which /dev/videoN to capture from - the
+    Jetson can have more than one camera attached at once (e.g. an onboard
+    CSI camera enumerating as video0, plus a USB webcam landing on video1),
+    and which index is which physical camera depends on boot/plug order,
+    not something safe to hardcode as CAMERA_DEVICE above. Skips the prompt
+    entirely when only one camera is present - nothing to choose between.
+
+    Returns (device_path, is_csi). is_csi matters downstream in
+    build_pipeline_description(): a CSI sensor (e.g. this board's imx219)
+    can't produce JPEG through the generic v4l2src path a USB webcam uses -
+    confirmed on real hardware (2026-09-07): forcing v4l2src+JPEG caps onto
+    the imx219 failed immediately with "streaming stopped, reason
+    not-negotiated". It needs Jetson's own nvarguscamerasrc/Argus stack
+    instead. Detected via the "vi-output" name prefix Tegra's Video Input
+    bridge driver uses specifically for CSI sensors - not a generic V4L2
+    convention, but reliable on this hardware.
+    """
+    devices = []
+    for entry in sorted(os.listdir("/dev")):
+        if not (entry.startswith("video") and entry[len("video"):].isdigit()):
+            continue
+        path = os.path.join("/dev", entry)
+        try:
+            with open("/sys/class/video4linux/{}/name".format(entry)) as f:
+                name = f.read().strip()
+        except OSError:
+            name = "(unknown)"
+        devices.append((path, name))
+
+    if not devices:
+        raise SystemExit("No /dev/video* camera device found - is a camera connected?")
+
+    if len(devices) == 1:
+        path, name = devices[0]
+        print("Using the only camera found: {} ({})".format(path, name))
+    else:
+        print("Multiple cameras found:")
+        for i, (path, name) in enumerate(devices, start=1):
+            print("  {}) {} - {}".format(i, path, name))
+
+        while True:
+            choice = input("Select a camera [1-{}]: ".format(len(devices))).strip()
+            if choice.isdigit() and 1 <= int(choice) <= len(devices):
+                path, name = devices[int(choice) - 1]
+                break
+            print("Invalid choice '{}', try again.".format(choice))
+
+        print("Selected: {} ({})".format(path, name))
+
+    is_csi = name.startswith("vi-output")
+    if is_csi:
+        print("   (CSI camera - will capture via nvarguscamerasrc, not v4l2src)")
+    return path, is_csi
+
+
+def build_pipeline_description(ip, profile, source_path=None, overlay_enabled=True):
     width, height = profile["resolution"]
+    if (width, height) not in OVERLAY_STYLES:
+        raise SystemExit(
+            "No OVERLAY_STYLES entry for {}x{} - add one (see the comment "
+            "above OVERLAY_STYLES).".format(width, height))
+    overlay_style = OVERLAY_STYLES[(width, height)]
     # valignment=bottom anchors to Pango's logical text box, which reserves
     # descender space these strings never use (no g/j/p/q/y - all caps and
     # digits), leaving dead space under the glyphs. Anchoring from the top
-    # instead avoids that, so compute the exact pixel offset here.
-    bottom_bar_text_ypad = height - BOTTOM_BAR_HEIGHT + BOTTOM_BAR_TEXT_MARGIN-6
+    # instead avoids that, so compute the exact pixel offset here. That
+    # descender reservation scales with font size - the original "-6" fudge
+    # was measured by eye at the baseline 960x540/11pt combination, so scale
+    # it proportionally for other font sizes rather than guessing a fresh
+    # constant per resolution.
+    bottom_text_font_size = overlay_style["bottom_text_font_size"]
+    descender_fudge = round(bottom_text_font_size * 6 / 11)
+    bottom_bar_text_ypad = (height - overlay_style["bottom_bar_height"]
+                             + overlay_style["bottom_bar_text_margin"] - descender_fudge)
     if TX_OUTPUT == "pluto":
         # Do not send this VBR mux directly to Pluto. Feed the local FFmpeg
         # relay instead; it adds null packets and forwards a correctly paced
@@ -462,25 +537,44 @@ def build_pipeline_description(ip, profile, source_path=None):
     parts = [
         "mpegtsmux name=mux alignment=7 !",
         mux_sink,
+    ]
 
-        "compositor name=comp",
-        "sink_0::xpos=0 sink_0::ypos=0",
-        "sink_1::xpos=0 sink_1::ypos=0 sink_1::alpha={}".format(TOP_BAR_ALPHA),
-        "sink_2::xpos=0 sink_2::ypos={} sink_2::alpha={}".format(
-            height - BOTTOM_BAR_HEIGHT, BOTTOM_BAR_ALPHA),
-        "!",
-        "videoconvert !",
-        "textoverlay text=\"{}\" halignment=center".format(TITLE_TEXT),
-        "valignment=top ypad=0 shaded-background=false font-desc=\"Sans 14\" !",
-        "textoverlay text=\"{}\" halignment=left xpad=10".format(CALLSIGN),
-        "valignment=top ypad={} shaded-background=false font-desc=\"Sans 11\" !".format(
-            bottom_bar_text_ypad),
-        "clockoverlay time-format=\"%H:%M:%S UTC\" halignment=right xpad=10",
-        "valignment=top ypad={} shaded-background=false font-desc=\"Sans 11\" !".format(
-            bottom_bar_text_ypad),
-        "textoverlay name=telemetry_overlay text=\"\" halignment=center",
-        "valignment=top ypad={} shaded-background=false font-desc=\"Sans 11\" !".format(
-            bottom_bar_text_ypad),
+    if overlay_enabled:
+        # Named junction point the source (+ the two bar videotestsrcs
+        # below) link into. Source chain must link to comp. FIRST, before
+        # the bar sources - compositor names request pads sink_0/1/2 in
+        # link order, and the sink_0/1/2 properties below assume
+        # sink_0=source, sink_1=top bar, sink_2=bottom bar.
+        video_sink = "comp."
+        parts += [
+            "compositor name=comp",
+            "sink_0::xpos=0 sink_0::ypos=0",
+            "sink_1::xpos=0 sink_1::ypos=0 sink_1::alpha={}".format(
+                overlay_style["top_bar_alpha"]),
+            "sink_2::xpos=0 sink_2::ypos={} sink_2::alpha={}".format(
+                height - overlay_style["bottom_bar_height"], overlay_style["bottom_bar_alpha"]),
+            "!",
+            "videoconvert !",
+            "textoverlay text=\"{}\" halignment=center".format(TITLE_TEXT),
+            "valignment=top ypad=0 shaded-background=false font-desc=\"Sans {}\" !".format(
+                overlay_style["title_font_size"]),
+            "textoverlay text=\"{}\" halignment=left xpad=10".format(CALLSIGN),
+            "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+                bottom_bar_text_ypad, bottom_text_font_size),
+            "clockoverlay time-format=\"%H:%M:%S UTC\" halignment=right xpad=10",
+            "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+                bottom_bar_text_ypad, bottom_text_font_size),
+            "textoverlay name=telemetry_overlay text=\"\" halignment=center",
+            "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+                bottom_bar_text_ypad, bottom_text_font_size),
+        ]
+    else:
+        # No compositor/bars/overlays at all - the source's video branch
+        # links straight into the encode chain via this named junction.
+        video_sink = "video_in."
+        parts += ["videoconvert name=video_in !"]
+
+    parts += [
         "nvvidconv ! video/x-raw(memory:NVMM),format=NV12 !",
         "queue !",
         "nvv4l2h265enc bitrate={} insert-sps-pps=true iframeinterval={} !".format(
@@ -489,22 +583,46 @@ def build_pipeline_description(ip, profile, source_path=None):
         "queue ! mux.",
     ]
 
-    # Source chain must link to comp. FIRST, before the bar sources below -
-    # compositor names request pads sink_0/1/2 in link order, and the
-    # sink_0/1/2 properties above assume sink_0=source, sink_1=top bar,
-    # sink_2=bottom bar.
     if SOURCE == "camera":
+        if CAMERA_IS_CSI:
+            # nvarguscamerasrc doesn't take a /dev/videoN path (CAMERA_DEVICE is
+            # unused here) - it addresses sensors by Argus sensor-id, and this
+            # board has exactly one CSI port, so sensor-id=0 is always correct.
+            # Its native output is NVMM-memory NV12, not JPEG - nvvidconv brings
+            # it down to plain system-memory video/x-raw so the rest of this
+            # chain (videorate/videoscale/videoconvert/compositor) is identical
+            # to the USB path below, matching how the *encoder* end of this
+            # pipeline already converts the other way (system memory -> NVMM)
+            # a few lines down.
+            parts += [
+                "nvarguscamerasrc sensor-id=0 !",
+                "video/x-raw(memory:NVMM),width=1280,height=720,framerate=30/1,format=NV12 !",
+                "nvvidconv flip-method={} !".format(CSI_FLIP_METHOD),
+                "videorate ! video/x-raw,framerate={}/1 !".format(FPS),
+                "videoscale ! video/x-raw,width={},height={} !".format(width, height),
+                "videoconvert ! {}".format(video_sink),
+            ]
+        else:
+            parts += [
+                "v4l2src device={} do-timestamp=true !".format(CAMERA_DEVICE),
+                "image/jpeg,width=1280,height=720,framerate=30/1 !",
+                "jpegdec !",
+                "videorate ! video/x-raw,framerate={}/1 !".format(FPS),
+                "videoscale ! video/x-raw,width={},height={} !".format(width, height),
+                "videoconvert ! {}".format(video_sink),
+            ]
         parts += [
-            "v4l2src device={} do-timestamp=true !".format(CAMERA_DEVICE),
-            "image/jpeg,width=1280,height=720,framerate=30/1 !",
-            "jpegdec !",
-            "videorate ! video/x-raw,framerate={}/1 !".format(FPS),
-            "videoscale ! video/x-raw,width={},height={} !".format(width, height),
-            "videoconvert ! comp.",
-
             "alsasrc device={} !".format(AUDIO_DEVICE),
             "audioconvert ! audioresample ! audiorate !",
             "audio/x-raw,format=S16LE,rate=48000,channels=1 !",
+        ]
+        if MIC_AGC:
+            # echo-cancel defaults to on in webrtcdsp, but that's for cancelling a
+            # local speaker's playback picked back up by the mic - nothing here
+            # plays audio locally, so it's disabled. gain-control (adaptive AGC)
+            # and noise-suppression stay on their defaults.
+            parts.append("webrtcdsp echo-cancel=false !")
+        parts += [
             "voaacenc bitrate={} !".format(profile["audio_bitrate_kbps"] * 1000),
             "aacparse !",
             "queue ! mux.",
@@ -518,7 +636,7 @@ def build_pipeline_description(ip, profile, source_path=None):
 
             "filesrc. ! queue ! videoconvert ! videorate ! video/x-raw,framerate={}/1 !".format(FPS),
             "videoscale ! video/x-raw,width={},height={} !".format(width, height),
-            "videoconvert ! comp.",
+            "videoconvert ! {}".format(video_sink),
 
             "filesrc. ! queue ! audioconvert ! audioresample ! audiorate !",
             "audio/x-raw,format=S16LE,rate=48000,channels=1 !",
@@ -529,15 +647,18 @@ def build_pipeline_description(ip, profile, source_path=None):
     else:
         raise ValueError("Unknown SOURCE {!r}".format(SOURCE))
 
-    parts += [
-        "videotestsrc pattern=black is-live=true !",
-        "video/x-raw,width={},height={},framerate={}/1 !".format(width, TOP_BAR_HEIGHT, FPS),
-        "videoconvert ! comp.",
+    if overlay_enabled:
+        parts += [
+            "videotestsrc pattern=black is-live=true !",
+            "video/x-raw,width={},height={},framerate={}/1 !".format(
+                width, overlay_style["top_bar_height"], FPS),
+            "videoconvert ! comp.",
 
-        "videotestsrc pattern=black is-live=true !",
-        "video/x-raw,width={},height={},framerate={}/1 !".format(width, BOTTOM_BAR_HEIGHT, FPS),
-        "videoconvert ! comp.",
-    ]
+            "videotestsrc pattern=black is-live=true !",
+            "video/x-raw,width={},height={},framerate={}/1 !".format(
+                width, overlay_style["bottom_bar_height"], FPS),
+            "videoconvert ! comp.",
+        ]
 
     return " ".join(parts)
 
@@ -558,7 +679,11 @@ def main():
         PROFILE, profile["symbol_rate"], profile["fec"], width, height,
         profile["video_bitrate_kbps"], profile["audio_bitrate_kbps"]))
 
+    if SOURCE == "camera":
+        global CAMERA_DEVICE, CAMERA_IS_CSI
+        CAMERA_DEVICE, CAMERA_IS_CSI = select_camera_device()
     source_path = select_video_file(profile) if SOURCE == "video" else None
+    overlay_enabled = ask_overlay_enabled() if SOURCE == "video" else True
 
     Gst.init(None)
 
@@ -582,9 +707,11 @@ def main():
                 mqtt_client, pluto_ip, CALLSIGN, profile, telemetry)
             cbr_relay = start_cbr_relay(pluto_ip, ts_bitrate)
 
-        pipeline_description = build_pipeline_description(pluto_ip, profile, source_path)
+        pipeline_description = build_pipeline_description(
+            pluto_ip, profile, source_path, overlay_enabled)
         log("🎬 Starting video stream...")
         gst_pipeline = Gst.parse_launch(pipeline_description)
+        # Only exists when overlay_enabled (see build_pipeline_description).
         telemetry_overlay = gst_pipeline.get_by_name("telemetry_overlay")
         # Only exists when SOURCE == "video" (see build_pipeline_description).
         video_source = gst_pipeline.get_by_name("filesrc")

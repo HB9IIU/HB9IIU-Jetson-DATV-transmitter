@@ -1,0 +1,792 @@
+"""Like datv_tx.py (live camera+mic -> Pluto DVB-S2), but supports multiple
+DVB-S2 profiles (symbol rate / FEC / resolution / bitrate combinations)
+instead of one fixed configuration, plus a live telemetry overlay. Select
+which profile is active by editing PROFILE below - still no command-line
+arguments.
+
+Profile table (PROFILES, FRAME, PILOTS, and the DVB-S2 capacity formula) now
+lives in dvbs2_profiles.py, shared with datv_tx_plus.py - see that module
+for how/why. Edit profiles there, not here.
+
+Overlays on the video:
+- UTC clock (top-right) and callsign (top-left). The Jetson's system
+  clock is local time (Europe/Zurich), so TZ is forced to UTC for this
+  process specifically (os.environ + time.tzset()) rather than changing
+  the system-wide timezone.
+- Live telemetry (bottom), updated every couple of seconds: Pluto
+  temperature and actual TX bitrate (both via MQTT, from the Pluto's own
+  ad9361-phy temp sensor and its live DVB-S2 stats), plus the Jetson's
+  own CPU load and CPU temperature (read locally, not from the Pluto).
+
+Why this needed a bigger change than datv_tx.py: a live-updating overlay
+can't be done with a static `gst-launch` command string run as a
+subprocess - the text has to be pushed into a *running* pipeline. So this
+script builds and controls the GStreamer pipeline directly in Python via
+PyGObject (the same GStreamer install, just used as a library instead of
+a spawned CLI process). PyGObject isn't pip-installable in the project's
+venv (it needs system packages), so the venv's pyvenv.cfg has
+`include-system-site-packages = true` to let it see the system-installed
+gi/GStreamer bindings alongside its own pip-installed paho-mqtt/paramiko.
+
+Includes a real hardware fix proven in datv_tx.py: nvv4l2h265enc needs an
+explicit iframeinterval or the picture can freeze.
+
+PTT is MQTT tx/mute only. An earlier version also SSHed in to directly
+power the TX LO down/up via sysfs, on the assumption that tx/mute alone
+wasn't reliable - never actually verified (no repro recorded), and
+contradicted by DATV-Red (the reference PC-side controller for this same
+firmware), which mutes over MQTT alone. That SSH path is kept in reserve
+(ssh_connect()/set_tx_lo_powerdown(), unused) in case real RF measurement
+ever shows MQTT-only muting is insufficient.
+
+MQTT uses the Pluto's default credentials: root/analog.
+
+FFT experiment (see documentation/Local_DATV_Lab_Implementation_Plan.pdf,
+sections 4/5/12): while transmitting, also enables PlutoDVB2's own RX
+WebFFT service, to visually confirm the Pluto's local RX channel actually
+sees our own TX carrier at the right frequency/width. This script only
+configures the Pluto over MQTT (rx/webfft/*, rx/stream/mode=webfft) - it
+does not touch the FFT data itself.
+
+Viewing it: ws://192.168.2.1:7681/websocket only exists on the private USB
+link between the Jetson and the Pluto, so a browser on another machine
+(e.g. a Windows PC) can't reach it directly. Run fft_relay.py on the
+Jetson alongside this script - it bridges that gap, serving fft_viewer.html
+and a relay WebSocket at http://<jetson-ip-or-hostname>:8000/, reachable
+from any browser on the LAN. This is the "minimal standalone client" proof
+step from the plan, not a redesign of the receiver app.
+"""
+
+import os
+import socket
+import subprocess
+import time
+
+import gi
+import paho.mqtt.client as mqtt
+import paramiko
+
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst  # noqa: E402  (must follow gi.require_version)
+
+from dvbs2_profiles import PROFILES, FRAME, PILOTS, calculate_dvbs2_ts_bitrate
+
+os.environ["TZ"] = "UTC"  # clockoverlay has no UTC option, only local time
+time.tzset()
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+START_TIME = time.monotonic()
+
+
+def log(message=""):
+    # Piped/redirected stdout (SSH, a log file, systemd) is fully buffered
+    # by default, so this would otherwise sit invisible until the buffer
+    # filled or the process exited cleanly - and be lost entirely on a
+    # SIGTERM/SIGKILL. flush=True forces it out immediately. (Can't use
+    # sys.stdout.reconfigure(line_buffering=True) instead - that needs
+    # Python 3.7+, and this runs under the Jetson's 3.6 venv.)
+    print("[{:.0f}ms] {}".format((time.monotonic() - START_TIME) * 1000, message),
+          flush=True)
+
+# ---- Settings - edit these directly ----
+PROFILE = "sr500_fec34_720p"
+SOURCE = "video"  # "camera" (live cam+mic) or "video" (pick+loop a pre-processed video)
+TX_OUTPUT = "pluto"  # "pluto" (transmit) or "file" (write the muxed TS to TX_OUTPUT_FILE for local inspection, no Pluto/MQTT needed)
+TX_OUTPUT_FILE = "debug_output.ts"
+CAMERA_DEVICE = "/dev/video0"  # overwritten by select_camera_device() when SOURCE == "camera"
+CAMERA_IS_CSI = False  # ditto - selects the nvarguscamerasrc branch instead of v4l2src+JPEG
+# nvvidconv's flip-method enum (2026-09-07: this board's imx219 is mounted
+# physically upside down): 0=none, 1=ccw-90, 2=rotate-180, 3=cw-90,
+# 4=h-flip, 5=upper-right-diagonal, 6=v-flip, 7=upper-left-diagonal. Only
+# applied on the CSI path - the USB webcam path doesn't use nvvidconv at
+# capture time, and isn't mounted upside down anyway.
+CSI_FLIP_METHOD = 2
+AUDIO_DEVICE = "plughw:2,0"  # Logitech C920 built-in microphone - independent of which camera is used for video
+# WebRTC's adaptive AGC (webrtcdsp) on the camera mic input - a real debug_output.ts
+# recording (2026-09-07) came out too quiet to use even with the ALSA capture level
+# already near its max (56/60, 93%, checked via `amixer -c 2`), so the fix has to be
+# in the pipeline, not the mixer. Only applies to SOURCE == "camera": pre-recorded
+# video-file audio is already mixed/mastered and doesn't need this. Mirrored from
+# datv_tx_plus.py.
+MIC_AGC = True
+CALLSIGN = "HB9IIU"
+FREQUENCY_HZ = 2405000000
+GAIN_DB = -20 # 0 was confirmed to produce zero RF output in a raw hardware test; -10 produced a visible signal
+TITLE_TEXT = "Jetson Nano - Standalone Hardware H.265 DVB-S2 Encoder"
+# Title/top-bar/bottom-bar sizing per resolution, not per profile name:
+# several profiles commonly share a resolution (e.g. sr333 and sr500 both
+# use 960x540) and should look identical. Add an entry here for any new
+# resolution a profile uses - build_pipeline_description() raises a clear
+# error instead of a confusing KeyError if one is missing.
+# bottom_bar_height = text block height (~ bottom_text_font_size * 1.6 px at
+# 96 DPI) + 2x bottom_bar_text_margin. bottom_text_font_size is shared by
+# all three bottom-bar overlays (callsign/clock/telemetry) - they've always
+# used one common size, never varied independently.
+# 960x540's values are the original, visually-confirmed-on-hardware ones;
+# 640x360/1280x720 are a first pass (2026-09-07) scaled proportionally to
+# width from that baseline (x0.667 / x1.333) - not yet visually confirmed,
+# adjust after looking at a real capture at each resolution. Mirrored from
+# datv_tx_plus.py.
+OVERLAY_STYLES = {
+    (640, 360): {"title_font_size": 10, "top_bar_height": 30, "top_bar_alpha": 0.5,
+                 "bottom_bar_height": 20, "bottom_bar_alpha": 0.5, "bottom_bar_text_margin": 4,
+                 "bottom_text_font_size": 7},
+    (960, 540): {"title_font_size": 14, "top_bar_height": 45, "top_bar_alpha": 0.5,
+                 "bottom_bar_height": 30, "bottom_bar_alpha": 0.5, "bottom_bar_text_margin": 6,
+                 "bottom_text_font_size": 11},
+    (1280, 720): {"title_font_size": 18, "top_bar_height": 60, "top_bar_alpha": 0.5,
+                  "bottom_bar_height": 40, "bottom_bar_alpha": 0.5, "bottom_bar_text_margin": 8,
+                  "bottom_text_font_size": 15},
+}
+# -----------------------------------------
+
+MQTT_PORT = 1883
+MQTT_USERNAME = "root"
+MQTT_PASSWORD = "analog"
+SSH_USERNAME = "root"
+SSH_PASSWORD = "analog"
+TX_LO_POWERDOWN_PATH = "/sys/bus/iio/devices/iio:device0/out_altvoltage1_TX_LO_powerdown"
+FPS = 25
+PLUTO_TS_PORT = 8282
+IIOD_PORT = 30431
+USB_DEFAULT_IP = "192.168.2.1"
+FORCE_USB = True  # Skip Ethernet/mDNS entirely and connect via the Pluto's USB interface
+CPU_THERMAL_ZONE_PATH = "/sys/devices/virtual/thermal/thermal_zone1/temp"  # Jetson CPU-therm
+TELEMETRY_UPDATE_SECONDS = 2.0
+# When SOURCE == "video", detect the file ending by polling its own position
+# vs. duration instead of waiting for a pipeline-level EOS message: this
+# pipeline mixes the file's decoded video with two always-live videotestsrc
+# bars in a compositor, and an aggregator-style element only forwards EOS
+# once *all* its sink pads have seen it - the live bars never do, so a real
+# end-of-file EOS never reaches the bus, and the transmission would
+# otherwise hang forever on a frozen last frame instead of stopping
+# (confirmed on real hardware/receiver on 2026-09-06). Must be bigger than
+# TELEMETRY_UPDATE_SECONDS so the poll loop always catches it in time.
+VIDEO_END_MARGIN_SECONDS = 3.0
+TS_BITRATE_WAIT_SECONDS = 30.0
+PLUTO_CONFIG_RETRY_SECONDS = 2.0
+CBR_RELAY_PORT = 18282
+# DATV-Red (the reference PC-side controller for this firmware) waits after
+# a tx/stream/mode change before resending the rest of the config - see its
+# "delay restore after MODE set" node (pauseType "delay", timeout 0.5s).
+# Mirrored here for the same reason: give the modulator time to settle
+# after the mode switch before sending the rest of the DVB-S2 parameters.
+MODE_SWITCH_SETTLE_SECONDS = 0.5
+
+# FFT experiment settings (implementation plan sections 4/5/12). Viewed via
+# fft_viewer.html, not by this script - see the module docstring.
+FFT_WEBSOCKET_PORT = 7681
+FFT_CENTER_HZ = FREQUENCY_HZ  # centre the local RX FFT on our own TX carrier
+FFT_SPAN_HZ = 9000000  # 9 MHz, per the plan's recommended display span
+
+
+def get_lan_ip():
+    """Best-effort LAN IP for this Jetson - NOT the Pluto's 192.168.2.x USB
+    address. Opens a UDP "connection" (no packet actually sent for UDP) to
+    pick whichever local interface the OS would route external traffic
+    through, then reads that socket's own address back.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def discover_pluto_ip():
+    log("📡 Looking for the Pluto...")
+    candidates = []
+    if FORCE_USB:
+        # Skip mDNS entirely - it would still find and prefer a flaky
+        # Ethernet address if that interface responds at all, defeating
+        # the point of forcing USB.
+        log("   FORCE_USB is set - skipping Ethernet/mDNS discovery.")
+    else:
+        try:
+            result = subprocess.run(
+                ["avahi-browse", "-r", "-t", "-p", "_iio._tcp"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                universal_newlines=True, timeout=10,
+            )
+            for line in result.stdout.splitlines():
+                fields = line.split(";")
+                if len(fields) >= 8 and fields[0] == "=" and fields[2] == "IPv4":
+                    candidates.append(fields[7])
+        except (OSError, subprocess.SubprocessError):
+            pass
+    candidates.append(USB_DEFAULT_IP)
+
+    for address in candidates:
+        try:
+            with socket.create_connection((address, IIOD_PORT), timeout=1.0):
+                log("   ✅ Found Pluto at {}".format(address))
+                return address
+        except OSError:
+            continue
+    raise SystemExit("❌ No PlutoSDR found (checked mDNS and USB default). "
+                      "Is it powered on and connected?")
+
+
+def mqtt_connect(ip):
+    client = mqtt.Client(client_id="jetson-datv-tx-plus")
+    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    client.connect(ip, MQTT_PORT, keepalive=5)
+    # Start the network loop immediately. Previously it was started only
+    # after all configuration publishes, so those QoS messages merely sat
+    # in the local client queue during Pluto startup.
+    client.loop_start()
+    return client
+
+
+def publish(client, callsign, subtopic, payload):
+    topic = "cmd/pluto/{}/{}".format(callsign, subtopic)
+    client.publish(topic, payload=str(payload), qos=1)
+    log("   📤 {} -> {}".format(topic, payload))
+
+
+def subscribe_telemetry(mqtt_client, callsign, telemetry):
+    prefix = "dt/pluto/{}/".format(callsign)
+
+    def on_message(_client, _userdata, message):
+        key = message.topic[len(prefix):]
+        telemetry[key] = message.payload.decode("utf-8", "replace")
+
+    mqtt_client.on_message = on_message
+    # Subscribe before sending any configuration. The complete state tree
+    # provides acknowledgements for the requested configuration. This
+    # PlutoDVB2 build does NOT publish a tx/dvbs2/ts/bitrate topic, so the
+    # TS capacity is calculated locally after the SR acknowledgement.
+    # MQTT publish success alone only proves that
+    # the broker received a command, not that pluto_mqtt_ctrl was listening.
+    result, _mid = mqtt_client.subscribe(prefix + "#", qos=1)
+    if result != mqtt.MQTT_ERR_SUCCESS:
+        raise RuntimeError("Could not subscribe to Pluto telemetry")
+    time.sleep(0.25)
+
+
+def configure_pluto_until_ready(mqtt_client, ip, callsign, profile, telemetry):
+    """Configure Pluto only after its MQTT controller is demonstrably ready.
+
+    The broker can accept commands before ``pluto_mqtt_ctrl`` has subscribed
+    after boot. These command topics are not retained, so a one-shot publish
+    can be silently lost. Keep resending the complete configuration while RF
+    is hardware-muted, and proceed only when Pluto reports both the requested
+    symbol rate. This firmware has no TS-bitrate telemetry topic; capacity is
+    calculated locally from the acknowledged modulation parameters.
+    """
+    deadline = time.monotonic() + TS_BITRATE_WAIT_SECONDS
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        telemetry.pop("tx/dvbs2/sr", None)
+        log("⚙️  Configuring DVB-S2 modulator (attempt {})...".format(attempt))
+        configure_pluto(mqtt_client, ip, callsign, profile)
+
+        attempt_deadline = min(
+            deadline, time.monotonic() + PLUTO_CONFIG_RETRY_SECONDS)
+        while time.monotonic() < attempt_deadline:
+            reported_sr = telemetry.get("tx/dvbs2/sr")
+            try:
+                sr_matches = int(reported_sr) == profile["symbol_rate"]
+            except (TypeError, ValueError):
+                sr_matches = False
+            if sr_matches:
+                bitrate = calculate_dvbs2_ts_bitrate(profile)
+                # Reuse the overlay's existing field with our exact local value.
+                telemetry["tx/dvbs2/ts/bitrate"] = str(bitrate)
+                log("   ✅ Pluto acknowledged SR={} and TS capacity={} bit/s".format(
+                    reported_sr, bitrate))
+                return bitrate
+            time.sleep(0.05)
+
+        log("   ⏳ Pluto controller not ready or did not acknowledge; retrying...")
+
+    raise RuntimeError(
+        "❌ Pluto MQTT controller did not acknowledge configuration within {:.0f}s; "
+        "RF remains muted".format(TS_BITRATE_WAIT_SECONDS))
+
+
+def start_cbr_relay(pluto_ip, ts_bitrate):
+    """Convert GStreamer's variable-rate TS into the fixed rate Pluto needs.
+
+    The Jetson's older mpegtsmux has no ``bitrate`` property and therefore
+    cannot insert null TS packets itself. With a static/easy-to-compress
+    picture we measured about 615 kbit/s leaving GStreamer while PlutoDVB2
+    required exactly 726038 bit/s for the active 500 kS/s, FEC 3/4 profile.
+    That underfed Pluto's input buffer and caused audio to arrive late and
+    intermittently at the receiver. FFmpeg remuxes without re-encoding and
+    ``-muxrate`` fills unused capacity with null packets at Pluto's exact
+    telemetry-reported rate.
+    """
+    # reuse=1 lets ffmpeg rebind this port immediately even if a just-killed
+    # previous run's socket briefly lingers - without it, a quick stop/start
+    # cycle can fail with "Address already in use".
+    input_url = "udp://127.0.0.1:{}?fifo_size=1000000&overrun_nonfatal=1&reuse=1".format(
+        CBR_RELAY_PORT)
+    output_url = "udp://{}:{}?pkt_size=1316".format(pluto_ip, PLUTO_TS_PORT)
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning",
+        "-fflags", "+nobuffer", "-probesize", "32768", "-analyzeduration", "1000000",
+        "-i", input_url,
+        "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+        "-muxrate", str(ts_bitrate),
+        "-muxpreload", "0", "-muxdelay", "0",
+        "-pcr_period", "20", "-pat_period", "0.4",
+        "-streamid", "0:256", "-streamid", "1:257",
+        "-mpegts_flags", "+system_b", "-flush_packets", "0",
+        "-f", "mpegts", output_url,
+    ]
+    log("🎞️  Starting CBR relay at {} bit/s...".format(ts_bitrate))
+    return subprocess.Popen(command)
+
+
+def ssh_connect(ip):
+    """In reserve, currently unused - see set_tx_lo_powerdown()."""
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # look_for_keys/allow_agent default to True, which makes paramiko hunt
+    # through local SSH keys and an agent before trying the password below -
+    # pure overhead here since this always authenticates by password.
+    ssh.connect(ip, username=SSH_USERNAME, password=SSH_PASSWORD, timeout=8,
+                look_for_keys=False, allow_agent=False)
+    return ssh
+
+
+def set_tx_lo_powerdown(ssh, powered_down):
+    """In reserve, currently unused.
+
+    This direct sysfs write was added on the assumption that MQTT tx/mute
+    alone doesn't reliably power the TX LO down/up on this firmware - a
+    claim never actually verified (no repro recorded anywhere), and
+    contradicted by DATV-Red, the reference PC-side controller for this
+    same firmware, which mutes over MQTT alone with no SSH/sysfs step at
+    all. set_ptt() no longer calls this. Wire it back in (pass an
+    ssh_connect()'d client through) if real RF measurement ever shows
+    MQTT-only muting is insufficient.
+    """
+    value = "1" if powered_down else "0"
+    ssh.exec_command("echo {} > {}".format(value, TX_LO_POWERDOWN_PATH))
+
+
+def set_ptt(mqtt_client, callsign, on):
+    publish(mqtt_client, callsign, "tx/mute", "0" if on else "1")
+    log("🔊 PTT ON" if on else "🔇 PTT OFF")
+
+
+def configure_pluto(mqtt_client, ip, callsign, profile):
+    # Without this, the Pluto's modulator can sit in whatever tx/stream/mode
+    # it defaults to (e.g. "test" - a bare, unmodulated carrier) regardless
+    # of how correctly every tx/dvbs2/* parameter below is configured. This
+    # is the actual mode switch that makes it modulate real DVB-S2 data at
+    # all - confirmed in the reference PlutoDVB2 source (pluto-ori).
+    publish(mqtt_client, callsign, "tx/stream/mode", "dvbs2-ts")
+    time.sleep(MODE_SWITCH_SETTLE_SECONDS)
+    publish(mqtt_client, callsign, "tx/frequency", FREQUENCY_HZ)
+    publish(mqtt_client, callsign, "tx/gain", GAIN_DB)
+    publish(mqtt_client, callsign, "tx/dvbs2/sr", profile["symbol_rate"])
+    publish(mqtt_client, callsign, "tx/dvbs2/fecmode", "fixed")
+    publish(mqtt_client, callsign, "tx/dvbs2/fec", profile["fec"])
+    publish(mqtt_client, callsign, "tx/dvbs2/frame", FRAME)
+    publish(mqtt_client, callsign, "tx/dvbs2/pilots", "1" if PILOTS else "0")
+    publish(mqtt_client, callsign, "tx/dvbs2/constel", "qpsk")
+    publish(mqtt_client, callsign, "tx/dvbs2/gainvariable", "0")
+    publish(mqtt_client, callsign, "tx/dvbs2/fecrange", 10)
+    publish(mqtt_client, callsign, "tx/dvbs2/tssourcemode", "0")
+    # tx/dvbs2/digitalgain=0 was suspected of disconnecting the broker and
+    # resetting SR, based on one earlier run. 5/5 repeat runs on 2026-09-06
+    # (via pluto_mqtt_diagnostic.py) passed cleanly, and every real DATV-Red
+    # profile (p1-p7) ships digitalgain=0 too, so it's back in the sequence.
+    publish(mqtt_client, callsign, "tx/dvbs2/digitalgain", "0")
+    publish(mqtt_client, callsign, "tx/dvbs2/firfilter", "1")
+    publish(mqtt_client, callsign, "tx/dvbs2/tssourceaddress",
+            "{}:{}".format(ip, PLUTO_TS_PORT))
+
+
+def configure_webfft(mqtt_client, callsign):
+    """Enable PlutoDVB2's own RX WebFFT service (implementation plan
+    section 5). The RX and TX chains are independent on the AD9361, so this
+    runs concurrently with the DVB-S2 transmission - that's the whole point
+    of the experiment: see our own TX carrier on the Pluto's own RX FFT.
+    """
+    publish(mqtt_client, callsign, "rx/stream/run", "1")
+    publish(mqtt_client, callsign, "rx/webfft/frequency", FFT_CENTER_HZ)
+    publish(mqtt_client, callsign, "rx/webfft/span", FFT_SPAN_HZ)
+    publish(mqtt_client, callsign, "rx/stream/mode", "webfft")
+
+
+def read_jetson_cpu_load_percent():
+    # Load average is "how many cores' worth of work is queued", not a
+    # percentage - normalize by core count so it reads like htop's overall
+    # CPU%, instead of routinely exceeding 100% on this 4-core Jetson.
+    return os.getloadavg()[0] / os.cpu_count() * 100.0
+
+
+def read_jetson_cpu_temp_c():
+    with open(CPU_THERMAL_ZONE_PATH) as f:
+        return int(f.read().strip()) / 1000.0
+
+
+def format_telemetry(telemetry):
+    pluto_temp = telemetry.get("temperature_ad")
+    pluto_temp_str = "{:.1f}°C".format(int(pluto_temp) / 1000.0) if pluto_temp else "--"
+    tx_bitrate = telemetry.get("tx/dvbs2/ts/bitrate")
+    tx_bitrate_str = "{:.0f}kb/s".format(int(tx_bitrate) / 1000.0) if tx_bitrate else "--"
+    return "Jetson CPU {:.1f}°C {:.0f}% | Pluto {} TX {}".format(
+        read_jetson_cpu_temp_c(), read_jetson_cpu_load_percent(),
+        pluto_temp_str, tx_bitrate_str)
+
+
+def select_video_file(profile):
+    """When SOURCE == "video", list the pre-processed videos available for
+    the active profile's resolution (see preprocess_videos.py, which fills
+    preprocessed_WxH/ folders next to this script) and let the user pick one
+    by number.
+    """
+    width, height = profile["resolution"]
+    video_dir = os.path.join(SCRIPT_DIR, "preprocessed_{}x{}".format(width, height))
+    print("Looking for pre-processed videos in {}...".format(video_dir))
+
+    if not os.path.isdir(video_dir):
+        raise SystemExit(
+            "No pre-processed videos folder for {}x{}: {}\n"
+            "Run preprocess_videos.py first.".format(width, height, video_dir))
+
+    files = sorted(name for name in os.listdir(video_dir) if name.lower().endswith(".mkv"))
+    if not files:
+        raise SystemExit(
+            "No pre-processed videos found in {}\n"
+            "Run preprocess_videos.py first.".format(video_dir))
+
+    print("Available videos for {}x{}:".format(width, height))
+    for i, name in enumerate(files, start=1):
+        print("  {}) {}".format(i, name))
+
+    while True:
+        choice = input("Select a video [1-{}]: ".format(len(files))).strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(files):
+            selected = files[int(choice) - 1]
+            break
+        print("Invalid choice '{}', try again.".format(choice))
+
+    video_path = os.path.join(video_dir, selected)
+    print("Selected: {}".format(video_path))
+    return video_path
+
+
+def select_camera_device():
+    """When SOURCE == "camera", pick which /dev/videoN to capture from - the
+    Jetson can have more than one camera attached at once (e.g. an onboard
+    CSI camera enumerating as video0, plus a USB webcam landing on video1),
+    and which index is which physical camera depends on boot/plug order,
+    not something safe to hardcode as CAMERA_DEVICE above. Skips the prompt
+    entirely when only one camera is present - nothing to choose between.
+
+    Returns (device_path, is_csi). is_csi matters downstream in
+    build_pipeline_description(): a CSI sensor (e.g. this board's imx219)
+    can't produce JPEG through the generic v4l2src path a USB webcam uses -
+    confirmed on real hardware (2026-09-07): forcing v4l2src+JPEG caps onto
+    the imx219 failed immediately with "streaming stopped, reason
+    not-negotiated". It needs Jetson's own nvarguscamerasrc/Argus stack
+    instead. Detected via the "vi-output" name prefix Tegra's Video Input
+    bridge driver uses specifically for CSI sensors - not a generic V4L2
+    convention, but reliable on this hardware. Mirrored from
+    datv_tx_plus.py.
+    """
+    devices = []
+    for entry in sorted(os.listdir("/dev")):
+        if not (entry.startswith("video") and entry[len("video"):].isdigit()):
+            continue
+        path = os.path.join("/dev", entry)
+        try:
+            with open("/sys/class/video4linux/{}/name".format(entry)) as f:
+                name = f.read().strip()
+        except OSError:
+            name = "(unknown)"
+        devices.append((path, name))
+
+    if not devices:
+        raise SystemExit("No /dev/video* camera device found - is a camera connected?")
+
+    if len(devices) == 1:
+        path, name = devices[0]
+        print("Using the only camera found: {} ({})".format(path, name))
+    else:
+        print("Multiple cameras found:")
+        for i, (path, name) in enumerate(devices, start=1):
+            print("  {}) {} - {}".format(i, path, name))
+
+        while True:
+            choice = input("Select a camera [1-{}]: ".format(len(devices))).strip()
+            if choice.isdigit() and 1 <= int(choice) <= len(devices):
+                path, name = devices[int(choice) - 1]
+                break
+            print("Invalid choice '{}', try again.".format(choice))
+
+        print("Selected: {} ({})".format(path, name))
+
+    is_csi = name.startswith("vi-output")
+    if is_csi:
+        print("   (CSI camera - will capture via nvarguscamerasrc, not v4l2src)")
+    return path, is_csi
+
+
+def build_pipeline_description(ip, profile, source_path=None):
+    width, height = profile["resolution"]
+    if (width, height) not in OVERLAY_STYLES:
+        raise SystemExit(
+            "No OVERLAY_STYLES entry for {}x{} - add one (see the comment "
+            "above OVERLAY_STYLES).".format(width, height))
+    overlay_style = OVERLAY_STYLES[(width, height)]
+    # valignment=bottom anchors to Pango's logical text box, which reserves
+    # descender space these strings never use (no g/j/p/q/y - all caps and
+    # digits), leaving dead space under the glyphs. Anchoring from the top
+    # instead avoids that, so compute the exact pixel offset here. That
+    # descender reservation scales with font size - the original "-6" fudge
+    # was measured by eye at the baseline 960x540/11pt combination, so scale
+    # it proportionally for other font sizes rather than guessing a fresh
+    # constant per resolution.
+    bottom_text_font_size = overlay_style["bottom_text_font_size"]
+    descender_fudge = round(bottom_text_font_size * 6 / 11)
+    bottom_bar_text_ypad = (height - overlay_style["bottom_bar_height"]
+                             + overlay_style["bottom_bar_text_margin"] - descender_fudge)
+    if TX_OUTPUT == "pluto":
+        # Do not send this VBR mux directly to Pluto. Feed the local FFmpeg
+        # relay instead; it adds null packets and forwards a correctly paced
+        # CBR transport stream to Pluto's normal UDP port 8282.
+        mux_sink = "udpsink host=127.0.0.1 port={} sync=true".format(CBR_RELAY_PORT)
+    else:
+        mux_sink = "filesink location={}".format(TX_OUTPUT_FILE)
+
+    parts = [
+        "mpegtsmux name=mux alignment=7 !",
+        mux_sink,
+
+        "compositor name=comp",
+        "sink_0::xpos=0 sink_0::ypos=0",
+        "sink_1::xpos=0 sink_1::ypos=0 sink_1::alpha={}".format(
+            overlay_style["top_bar_alpha"]),
+        "sink_2::xpos=0 sink_2::ypos={} sink_2::alpha={}".format(
+            height - overlay_style["bottom_bar_height"], overlay_style["bottom_bar_alpha"]),
+        "!",
+        "videoconvert !",
+        "textoverlay text=\"{}\" halignment=center".format(TITLE_TEXT),
+        "valignment=top ypad=0 shaded-background=false font-desc=\"Sans {}\" !".format(
+            overlay_style["title_font_size"]),
+        "textoverlay text=\"{}\" halignment=left xpad=10".format(CALLSIGN),
+        "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+            bottom_bar_text_ypad, bottom_text_font_size),
+        "clockoverlay time-format=\"%H:%M:%S UTC\" halignment=right xpad=10",
+        "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+            bottom_bar_text_ypad, bottom_text_font_size),
+        "textoverlay name=telemetry_overlay text=\"\" halignment=center",
+        "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+            bottom_bar_text_ypad, bottom_text_font_size),
+        "nvvidconv ! video/x-raw(memory:NVMM),format=NV12 !",
+        "queue !",
+        "nvv4l2h265enc bitrate={} insert-sps-pps=true iframeinterval={} !".format(
+            profile["video_bitrate_kbps"] * 1000, FPS),
+        "h265parse config-interval=1 !",
+        "queue ! mux.",
+    ]
+
+    # Source chain must link to comp. FIRST, before the bar sources below -
+    # compositor names request pads sink_0/1/2 in link order, and the
+    # sink_0/1/2 properties above assume sink_0=source, sink_1=top bar,
+    # sink_2=bottom bar.
+    if SOURCE == "camera":
+        if CAMERA_IS_CSI:
+            # nvarguscamerasrc doesn't take a /dev/videoN path (CAMERA_DEVICE is
+            # unused here) - it addresses sensors by Argus sensor-id, and this
+            # board has exactly one CSI port, so sensor-id=0 is always correct.
+            # Its native output is NVMM-memory NV12, not JPEG - nvvidconv brings
+            # it down to plain system-memory video/x-raw so the rest of this
+            # chain (videorate/videoscale/videoconvert/compositor) is identical
+            # to the USB path below, matching how the *encoder* end of this
+            # pipeline already converts the other way (system memory -> NVMM)
+            # a few lines up.
+            parts += [
+                "nvarguscamerasrc sensor-id=0 !",
+                "video/x-raw(memory:NVMM),width=1280,height=720,framerate=30/1,format=NV12 !",
+                "nvvidconv flip-method={} !".format(CSI_FLIP_METHOD),
+                "videorate ! video/x-raw,framerate={}/1 !".format(FPS),
+                "videoscale ! video/x-raw,width={},height={} !".format(width, height),
+                "videoconvert ! comp.",
+            ]
+        else:
+            parts += [
+                "v4l2src device={} do-timestamp=true !".format(CAMERA_DEVICE),
+                "image/jpeg,width=1280,height=720,framerate=30/1 !",
+                "jpegdec !",
+                "videorate ! video/x-raw,framerate={}/1 !".format(FPS),
+                "videoscale ! video/x-raw,width={},height={} !".format(width, height),
+                "videoconvert ! comp.",
+            ]
+        parts += [
+            "alsasrc device={} !".format(AUDIO_DEVICE),
+            "audioconvert ! audioresample ! audiorate !",
+            "audio/x-raw,format=S16LE,rate=48000,channels=1 !",
+        ]
+        if MIC_AGC:
+            # echo-cancel defaults to on in webrtcdsp, but that's for cancelling a
+            # local speaker's playback picked back up by the mic - nothing here
+            # plays audio locally, so it's disabled. gain-control (adaptive AGC)
+            # and noise-suppression stay on their defaults.
+            parts.append("webrtcdsp echo-cancel=false !")
+        parts += [
+            "voaacenc bitrate={} !".format(profile["audio_bitrate_kbps"] * 1000),
+            "aacparse !",
+            "queue ! mux.",
+        ]
+    elif SOURCE == "video":
+        parts += [
+            # Pads are created dynamically once the file's streams are known,
+            # but gst_parse_launch defers "filesrc." links until then - the
+            # same idiom as `gst-launch-1.0 uridecodebin ... name=d d. ! ...`.
+            "uridecodebin uri={} name=filesrc".format(Gst.filename_to_uri(source_path)),
+
+            "filesrc. ! queue ! videoconvert ! videorate ! video/x-raw,framerate={}/1 !".format(FPS),
+            "videoscale ! video/x-raw,width={},height={} !".format(width, height),
+            "videoconvert ! comp.",
+
+            "filesrc. ! queue ! audioconvert ! audioresample ! audiorate !",
+            "audio/x-raw,format=S16LE,rate=48000,channels=1 !",
+            "voaacenc bitrate={} !".format(profile["audio_bitrate_kbps"] * 1000),
+            "aacparse !",
+            "queue ! mux.",
+        ]
+    else:
+        raise ValueError("Unknown SOURCE {!r}".format(SOURCE))
+
+    parts += [
+        "videotestsrc pattern=black is-live=true !",
+        "video/x-raw,width={},height={},framerate={}/1 !".format(
+            width, overlay_style["top_bar_height"], FPS),
+        "videoconvert ! comp.",
+
+        "videotestsrc pattern=black is-live=true !",
+        "video/x-raw,width={},height={},framerate={}/1 !".format(
+            width, overlay_style["bottom_bar_height"], FPS),
+        "videoconvert ! comp.",
+    ]
+
+    return " ".join(parts)
+
+
+def print_banner():
+    line = "=" * 62
+    print(line)
+    print("   🛰️   {}  —  DATV-Plus QO-100 DVB-S2 Transmitter".format(CALLSIGN))
+    print("   📡  {:.3f} MHz".format(FREQUENCY_HZ / 1e6))
+    print(line)
+
+
+def main():
+    print_banner()
+    profile = PROFILES[PROFILE]
+    width, height = profile["resolution"]
+    log("🎛️  Profile '{}': SR={} FEC={} {}x{} video={}kbps audio={}kbps".format(
+        PROFILE, profile["symbol_rate"], profile["fec"], width, height,
+        profile["video_bitrate_kbps"], profile["audio_bitrate_kbps"]))
+
+    if SOURCE == "camera":
+        global CAMERA_DEVICE, CAMERA_IS_CSI
+        CAMERA_DEVICE, CAMERA_IS_CSI = select_camera_device()
+    source_path = select_video_file(profile) if SOURCE == "video" else None
+
+    Gst.init(None)
+
+    to_pluto = TX_OUTPUT == "pluto"
+    pluto_ip = discover_pluto_ip() if to_pluto else None
+    mqtt_client = mqtt_connect(pluto_ip) if to_pluto else None
+    telemetry = {}
+    cbr_relay = None
+    gst_pipeline = None
+    try:
+        if to_pluto:
+            # Listen for state acknowledgements before issuing commands.
+            subscribe_telemetry(mqtt_client, CALLSIGN, telemetry)
+
+            log("🔇 Muting RF before configuring (safety)...")
+            set_ptt(mqtt_client, CALLSIGN, on=False)
+
+            log("⏳ Waiting for Pluto MQTT control on {} ({})...".format(
+                pluto_ip, CALLSIGN))
+            ts_bitrate = configure_pluto_until_ready(
+                mqtt_client, pluto_ip, CALLSIGN, profile, telemetry)
+            cbr_relay = start_cbr_relay(pluto_ip, ts_bitrate)
+
+            log("📈 Enabling RX WebFFT at {:.3f} MHz, {:.1f} MHz span...".format(
+                FFT_CENTER_HZ / 1e6, FFT_SPAN_HZ / 1e6))
+            configure_webfft(mqtt_client, CALLSIGN)
+            log("📈 Run fft_relay.py on this Jetson, then open "
+                "http://{}:8000/fft_viewer.html from any browser on the LAN "
+                "to view it live.".format(get_lan_ip()))
+
+        pipeline_description = build_pipeline_description(pluto_ip, profile, source_path)
+        log("🎬 Starting video stream...")
+        gst_pipeline = Gst.parse_launch(pipeline_description)
+        telemetry_overlay = gst_pipeline.get_by_name("telemetry_overlay")
+        # Only exists when SOURCE == "video" (see build_pipeline_description).
+        video_source = gst_pipeline.get_by_name("filesrc")
+        bus = gst_pipeline.get_bus()
+        gst_pipeline.set_state(Gst.State.PLAYING)
+
+        if to_pluto:
+            log("🔊 Keying up...")
+            set_ptt(mqtt_client, CALLSIGN, on=True)
+            print()
+            log("🚀 TRANSMITTING on {:.3f} MHz, SR={} FEC={}. Press Ctrl+C to stop.".format(
+                FREQUENCY_HZ / 1e6, profile["symbol_rate"], profile["fec"]))
+        else:
+            print()
+            log("💾 Writing to '{}'. Press Ctrl+C to stop.".format(TX_OUTPUT_FILE))
+        while True:
+            message = bus.timed_pop_filtered(
+                int(TELEMETRY_UPDATE_SECONDS * Gst.SECOND),
+                Gst.MessageType.ERROR | Gst.MessageType.EOS)
+            if message is not None:
+                if message.type == Gst.MessageType.ERROR:
+                    error, debug = message.parse_error()
+                    raise RuntimeError("GStreamer error: {} ({})".format(error, debug))
+                break  # EOS - the video finished; transmission ends here.
+            if video_source is not None:
+                ok_dur, duration = video_source.query_duration(Gst.Format.TIME)
+                ok_pos, position = video_source.query_position(Gst.Format.TIME)
+                if (ok_dur and ok_pos and duration > 0
+                        and position >= duration - VIDEO_END_MARGIN_SECONDS * Gst.SECOND):
+                    log("🏁 Video finished; transmission ends here.")
+                    break
+            if telemetry_overlay is not None:
+                telemetry_overlay.set_property("text", format_telemetry(telemetry))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print()
+        log("🛑 Stopping...")
+        if gst_pipeline is not None:
+            gst_pipeline.set_state(Gst.State.NULL)
+        if cbr_relay is not None:
+            cbr_relay.terminate()
+            try:
+                cbr_relay.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                cbr_relay.kill()
+        if to_pluto:
+            try:
+                set_ptt(mqtt_client, CALLSIGN, on=False)
+                log("✅ Stopped. PTT OFF.")
+            except Exception as exc:
+                log("⚠️  WARNING: could not confirm PTT OFF ({}) - "
+                    "check the Pluto directly!".format(exc))
+            mqtt_client.loop_stop()
+            mqtt_client.disconnect()
+        else:
+            log("✅ Stopped. Wrote '{}'.".format(TX_OUTPUT_FILE))
+
+
+if __name__ == "__main__":
+    main()

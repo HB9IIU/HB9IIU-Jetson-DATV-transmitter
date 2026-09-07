@@ -38,13 +38,33 @@ RESOLUTIONS = {
 
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".m4v", ".mov", ".webm", ".mkv"}
 
-# ffmpeg isn't always on PATH on this machine (confirmed earlier - `where
-# ffmpeg` found nothing), so fall back to the known WinGet install location.
+# ffmpeg-static/ffmpeg is a self-contained static build (currently 7.0.2,
+# with AV1/libdav1d decode support) placed next to this script - checked
+# first because the Jetson's system ffmpeg (3.4.8, Ubuntu 18.04's package)
+# can't decode AV1 sources at all ("Decoder (codec av1) not found"). Kept
+# separate from /usr/bin/ffmpeg rather than replacing it, to avoid any risk
+# of an apt-based upgrade destabilizing the NVIDIA multimedia stack the
+# GStreamer hardware encoder pipeline depends on.
+#
+# ffmpeg isn't always on PATH on the Windows machine either (confirmed
+# earlier - `where ffmpeg` found nothing), so fall back to the known WinGet
+# install location there.
 FFMPEG_CANDIDATES = [
+    os.path.join(SCRIPT_DIR, "ffmpeg-static", "ffmpeg"),
     shutil.which("ffmpeg"),
     r"C:\Users\danie\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.1-full_build\bin\ffmpeg.exe",
 ]
 FFMPEG = next((p for p in FFMPEG_CANDIDATES if p and os.path.isfile(p)), None)
+
+# ffprobe lives next to whichever ffmpeg got picked above (both the static
+# build and a normal system install ship it alongside ffmpeg); fall back to
+# PATH if that exact pairing isn't there.
+if FFMPEG is not None:
+    _ffprobe_name = "ffprobe.exe" if FFMPEG.lower().endswith(".exe") else "ffprobe"
+    _ffprobe_candidate = os.path.join(os.path.dirname(FFMPEG), _ffprobe_name)
+    FFPROBE = _ffprobe_candidate if os.path.isfile(_ffprobe_candidate) else shutil.which("ffprobe")
+else:
+    FFPROBE = None
 
 
 def find_source_videos():
@@ -76,6 +96,26 @@ def output_path_for(source_path, output_dir):
     return os.path.join(output_dir, base_name + ".mkv")
 
 
+def is_valid_output(path):
+    """A previous run's output only counts as done if it's a real, playable
+    file - ffmpeg can create/truncate the output file before failing partway
+    through (e.g. no decoder for the source codec), which plain
+    os.path.exists() can't tell apart from a genuinely completed
+    conversion, silently leaving a broken file in place forever."""
+    if not os.path.exists(path):
+        return False
+    if FFPROBE is None:
+        return os.path.getsize(path) > 0  # best effort without ffprobe
+    result = subprocess.run(
+        [FFPROBE, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    try:
+        return float(result.stdout.strip()) > 0
+    except ValueError:
+        return False
+
+
 def plan_conversions(source_videos):
     """Check every (source, resolution) pair and split into already-done vs
     still-needed, printing the reasoning for each one along the way."""
@@ -85,7 +125,7 @@ def plan_conversions(source_videos):
         source_name = os.path.basename(source_path)
         for (width, height), output_dir in RESOLUTIONS.items():
             out_path = output_path_for(source_path, output_dir)
-            if os.path.exists(out_path):
+            if is_valid_output(out_path):
                 print("  [skip]    {} @ {}x{} -> already exists: {}".format(
                     source_name, width, height, out_path))
             else:

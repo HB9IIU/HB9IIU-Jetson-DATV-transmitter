@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pluto local RX FFT</title>
+<style>
+  body { background: #111; color: #ddd; font-family: sans-serif; margin: 0; padding: 12px; }
+  #controls { margin-bottom: 8px; }
+  input { font-size: 14px; padding: 4px; }
+  button { font-size: 14px; padding: 4px 10px; }
+  #status { margin-left: 10px; }
+  #status.ok { color: #4f4; }
+  #status.bad { color: #f44; }
+  canvas { background: #000; border: 1px solid #444; display: block; }
+</style>
+</head>
+<body>
+
+<div id="controls">
+  Relay host: <input id="host" value="">
+  <button id="connect">Connect</button>
+  <span id="status">not connected</span>
+</div>
+<canvas id="plot" width="1200" height="500"></canvas>
+
+<script>
+// This connects to fft_relay.py's relay WebSocket (port 8765) running on
+// the Jetson, NOT directly to the Pluto: ws://192.168.2.1:7681/websocket
+// only exists on the private USB link between the Jetson and the Pluto, so
+// a browser on another machine has no route to it. fft_relay.py bridges
+// that - see its module docstring.
+//
+// Frames are a binary array of unsigned 16-bit values in the Pluto CPU's
+// native little-endian byte order (documentation/
+// Local_DATV_Lab_Implementation_Plan.pdf, section 4). A plain Uint16Array
+// read is little-endian on every real-world browser/CPU, so no manual
+// byte-swapping is needed.
+
+const canvas = document.getElementById("plot");
+const ctx = canvas.getContext("2d");
+const statusEl = document.getElementById("status");
+const hostInput = document.getElementById("host");
+let ws = null;
+let latestBins = null;
+
+// Default to whatever host served this page (fft_relay.py serves both the
+// page on :8000 and the relay WebSocket on :8765 from the same Jetson), so
+// this works with no typing when opened via http://<jetson>:8000/... . Only
+// falls back to a literal default if opened as a local file:// (no host).
+hostInput.value = window.location.hostname || "jetson-nano.local";
+
+function setStatus(text, ok) {
+  statusEl.textContent = text;
+  statusEl.className = ok ? "ok" : "bad";
+}
+
+function connect() {
+  if (ws) {
+    ws.close();
+  }
+  const host = hostInput.value.trim();
+  const url = "ws://" + host + ":8765/";
+  setStatus("connecting to " + url + " ...", false);
+  ws = new WebSocket(url);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => setStatus("connected: " + url, true);
+  ws.onclose = () => setStatus("disconnected", false);
+  ws.onerror = () => setStatus("error connecting to " + url, false);
+
+  ws.onmessage = (event) => {
+    if (!(event.data instanceof ArrayBuffer) || event.data.byteLength < 2) {
+      return;
+    }
+    latestBins = new Uint16Array(event.data);
+  };
+}
+
+function draw() {
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+
+  if (latestBins && latestBins.length > 0) {
+    const n = latestBins.length;
+    // Auto-scale to this frame's own min/max instead of the full 0-65535
+    // range: real RX noise-floor values are usually a small fraction of
+    // full scale, so a fixed axis flattens everything into an invisible
+    // line near zero even when a real signal is present.
+    let frameMin = latestBins[0];
+    let frameMax = latestBins[0];
+    for (let i = 1; i < n; i++) {
+      if (latestBins[i] < frameMin) frameMin = latestBins[i];
+      if (latestBins[i] > frameMax) frameMax = latestBins[i];
+    }
+    const range = Math.max(1, frameMax - frameMin);
+    ctx.strokeStyle = "#3f3";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * width;
+      const y = height - ((latestBins[i] - frameMin) / range) * height;
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+    ctx.fillStyle = "#888";
+    ctx.font = "12px sans-serif";
+    ctx.fillText("min " + frameMin + "  max " + frameMax + "  (auto-scaled)", 8, 16);
+  } else {
+    ctx.fillStyle = "#666";
+    ctx.font = "16px sans-serif";
+    ctx.fillText("waiting for FFT frames...", 20, height / 2);
+  }
+
+  requestAnimationFrame(draw);
+}
+
+document.getElementById("connect").addEventListener("click", connect);
+requestAnimationFrame(draw);
+</script>
+
+</body>
+</html>

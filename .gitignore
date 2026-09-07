@@ -19,5 +19,12 @@ pluto-ori/
 # Scratch/temp files
 tempo/
 
-# Exceeds GitHub's 100MB file size limit - kept locally, not versioned
-original videos/Bunny.avi
+# Source/reference/test video clips - some individually exceed GitHub's
+# 100MB file size limit (e.g. the old Bunny.avi this replaces), and none of
+# them are project source anyway - kept locally, not versioned.
+original videos/
+original videos backup/
+
+# Local debug capture (TX_OUTPUT="file" output) - a generated artifact, not
+# source.
+debug_output.ts
