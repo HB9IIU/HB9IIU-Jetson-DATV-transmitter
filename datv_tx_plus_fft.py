@@ -65,6 +65,7 @@ import time
 import gi
 import paho.mqtt.client as mqtt
 import paramiko
+import yaml
 
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402  (must follow gi.require_version)
@@ -91,7 +92,7 @@ def log(message=""):
 
 # ---- Settings - edit these directly ----
 PROFILE = "sr500_fec34_720p"
-SOURCE = "video"  # "camera" (live cam+mic) or "video" (pick+loop a pre-processed video)
+SOURCE = "video"  # "camera" (live cam+mic), "video" (pick+loop a pre-processed video), or "testcard" (pick+loop a static image from testcards/)
 TX_OUTPUT = "pluto"  # "pluto" (transmit) or "file" (write the muxed TS to TX_OUTPUT_FILE for local inspection, no Pluto/MQTT needed)
 TX_OUTPUT_FILE = "debug_output.ts"
 CAMERA_DEVICE = "/dev/video0"  # overwritten by select_camera_device() when SOURCE == "camera"
@@ -114,6 +115,42 @@ CALLSIGN = "HB9IIU"
 FREQUENCY_HZ = 2405000000
 GAIN_DB = -20 # 0 was confirmed to produce zero RF output in a raw hardware test; -10 produced a visible signal
 TITLE_TEXT = "Jetson Nano - Standalone Hardware H.265 DVB-S2 Encoder"
+
+# When SOURCE == "testcard": testcard mode never uses the title/bars/clock/
+# telemetry overlay system above (see build_pipeline_description() - it
+# skips straight to a plain videoconvert junction, no compositor) - a still
+# test-card image is its own "chrome" and doesn't need it. The four things
+# still burned in - callsign, freq banner, volume banner, elapsed-time
+# readout - have their position/font/color loaded from
+# TESTCARD_OVERLAY_CONFIG_PATH (see load_testcard_overlay_config() below)
+# instead of being fixed constants here: different test card images (and
+# the same image at a different profile resolution) need different
+# placement to land on a clean part of the artwork, and with up to 10 test
+# cards x 3 resolutions that's better edited in one external file than
+# hardcoded per combination in Python. Shared with datv_tx_plus.py - both
+# scripts read the same testcard_overlays.yaml.
+TESTCARD_OVERLAY_CONFIG_PATH = os.path.join(SCRIPT_DIR, "testcard_overlays.yaml")
+TESTCARD_TIME_OVERLAY_TICK_SECONDS = 0.05  # how often the readout refreshes
+
+# Scrolling banner: position (both the horizontal start/end of the sweep and
+# the vertical placement) is per-resolution, in plain pixel coordinates, in
+# MARQUEE_STYLES below (a dict separate from OVERLAY_STYLES since this is a
+# distinct, optional, still-experimental feature, not part of the
+# always-on title/bar chrome). Pixel values outside the visible frame
+# (negative, or beyond width/height) are valid and expected - that's how
+# the sweep starts/ends fully off-screen for a real marquee effect.
+# Mirrored from datv_tx_plus.py.
+MARQUEE_ENABLED = True
+MARQUEE_TEXT = "The quick brown fox jumps over the lazy dog"
+MARQUEE_FONT_SIZE = 14
+MARQUEE_SCROLL_PERIOD_SECONDS = 30.0  # time for one full sweep, x_start_px -> x_end_px (MARQUEE_STYLES)
+# How often the main loop wakes up to move the banner - has to be much
+# faster than TELEMETRY_UPDATE_SECONDS for the motion to look smooth, so
+# the main loop's poll interval is keyed off this instead when the marquee
+# is enabled (telemetry text/EOF checks stay gated to their own slower
+# intervals, just evaluated more often).
+MARQUEE_TICK_SECONDS = 0.05
+
 # Title/top-bar/bottom-bar sizing per resolution, not per profile name:
 # several profiles commonly share a resolution (e.g. sr333 and sr500 both
 # use 960x540) and should look identical. Add an entry here for any new
@@ -139,6 +176,27 @@ OVERLAY_STYLES = {
                   "bottom_bar_height": 40, "bottom_bar_alpha": 0.5, "bottom_bar_text_margin": 8,
                   "bottom_text_font_size": 15},
 }
+
+# Marquee position per resolution - a separate dict from OVERLAY_STYLES on
+# purpose: it's a distinct, optional, still-experimental feature, not part
+# of the always-on title/bar chrome. Plain pixel coordinates for the
+# resolution in question: 0 = left edge, width = right edge (same for
+# y_px/height) - negative or beyond-width/height values are valid and mean
+# "off-screen", which is how the marquee starts/ends fully hidden. (The
+# underlying GStreamer property only understands a 0-1-of-frame-size
+# fraction - build_pipeline_description() divides these pixel values by
+# width/height to get that fraction, so you never have to think in
+# fractions here.) Defaults below (2x/-2x the frame width, i.e. two full
+# screen-widths off each edge) match the marquee's original behavior before
+# it had per-resolution settings - deliberately generous so the text is
+# fully hidden at both extremes regardless of its actual rendered pixel
+# width (not measured here). Adjust per resolution as needed. Mirrored from
+# datv_tx_plus.py.
+MARQUEE_STYLES = {
+    (640, 360): {"x_start_px": 1280, "x_end_px": -1280, "y_px": 180},
+    (960, 540): {"x_start_px": 1920, "x_end_px": -1920, "y_px": 270},
+    (1280, 720): {"x_start_px": 2560, "x_end_px": -2560, "y_px": 360},
+}
 # -----------------------------------------
 
 MQTT_PORT = 1883
@@ -154,6 +212,80 @@ USB_DEFAULT_IP = "192.168.2.1"
 FORCE_USB = True  # Skip Ethernet/mDNS entirely and connect via the Pluto's USB interface
 CPU_THERMAL_ZONE_PATH = "/sys/devices/virtual/thermal/thermal_zone1/temp"  # Jetson CPU-therm
 TELEMETRY_UPDATE_SECONDS = 2.0
+# When SOURCE == "testcard": a little looping melody instead of a music
+# soundtrack file or a plain line-up sweep. Deliberately a live
+# audiotestsrc, not a file: an earlier attempt played a real soundtrack
+# file on a loop (seeking back to 0 on EOS), but every loop point injected
+# a segment discontinuity that mpegtsmux couldn't handle, corrupting the
+# muxed TS from that point on (confirmed on real hardware - see git
+# history). A live sine generator has no file, no EOS, nothing to seek -
+# each note is just a (frequency_hz, duration_seconds) step, and its
+# frequency is changed in place via set_property() in main()'s poll loop
+# once the current note's duration has elapsed, sidestepping the whole
+# problem. Volume does NOT vary note-to-note within a play-through - it's
+# one fixed level for the whole tune, cycling to the next level in
+# TESTCARD_MELODY_VOLUMES only once per full repeat (see main()).
+#
+# Two melodies below, same idiom as the PROFILE selector further up this
+# file: both stay defined, only the last assignment is active - swap which
+# one is on top to switch. The first is a small original, deliberately
+# silly "bouncing clown" tune, kept as a fallback/reference. The second
+# (active) is a precise transcription of the BBC World Service's "Lincoln-
+# shire Poacher" interval signal (first two bars, in G major) - unlike the
+# earlier from-memory attempt at a different famous tune, this one was
+# given as an exact frequency/duration table, not reconstructed from
+# memory, so it should be accurate as transcribed.
+TESTCARD_TONE_MELODY = [
+    (392, 0.5),  # G4
+    (494, 0.5),  # B4
+    (587, 0.5),  # D5
+    (494, 0.5),  # B4
+    (392, 0.5),  # G4
+    (330, 0.5),  # E4
+    (392, 1.5),  # G4, held - the "punchline"
+]
+TESTCARD_TONE_MELODY = [
+    (294, 0.20),  # D4
+    (392, 0.40),  # G4
+    (392, 0.20),  # G4
+    (392, 0.20),  # G4
+    (370, 0.20),  # F#4
+    (330, 0.20),  # E4
+    (294, 0.40),  # D4
+    (262, 0.20),  # C4
+    (247, 0.40),  # B3
+    (294, 0.20),  # D4
+]
+# Volume (audiotestsrc's own linear 0.0-1.0 scale; 0.126 ~= -18dBFS, this
+# project's usual calibration-tone level) for one entire play-through of
+# the tune - cycles to the next entry only when the tune restarts, so each
+# repeat is audibly quieter/louder than the last rather than varying
+# within a single play.
+TESTCARD_MELODY_VOLUMES = [0.05, 0.25, 0.50, 0.75, 1.00]
+TESTCARD_MELODY_REST_SECONDS = 1.5  # silent gap after the whole tune, before it repeats
+# The actual runtime playback sequence: TESTCARD_TONE_MELODY followed by a
+# single silent rest before the tune loops back to the start. Each entry
+# is (freq, duration, is_rest) - the volume applied at each step is
+# decided separately in main() (see TESTCARD_MELODY_VOLUMES above);
+# is_rest drives the banner text: blank during the rest, "<freq> Hz  Vol
+# <volume>" during a note.
+TESTCARD_TONE_SCHEDULE = [
+    (freq, duration, False) for freq, duration in TESTCARD_TONE_MELODY
+]
+TESTCARD_TONE_SCHEDULE.append(
+    (TESTCARD_TONE_MELODY[-1][0], TESTCARD_MELODY_REST_SECONDS, True))
+TESTCARD_MELODY_TICK_SECONDS = 0.1  # poll granularity - keeps short notes/rests on schedule
+# The video path (hardware H.265 encode, mux, the CBR relay's pacing
+# buffer) carries noticeably more latency than the lightweight audio path
+# (audiotestsrc -> voaacenc), so a same-instant update of the banner text
+# and the actual tone frequency arrives at the receiver with the banner
+# ahead of the tone it's supposed to label (confirmed on real hardware:
+# the display looked "behind" by about a full tone). Delaying the actual
+# frequency change relative to the banner text compensates for that. This
+# is a rough starting guess, not a measured value - increase it if the
+# display still looks ahead of what you hear, decrease it if the tone now
+# arrives audibly before the label changes.
+TESTCARD_AUDIO_DELAY_SECONDS = 1.0
 # When SOURCE == "video", detect the file ending by polling its own position
 # vs. duration instead of waiting for a pipeline-level EOS message: this
 # pipeline mixes the file's decoded video with two always-live videotestsrc
@@ -440,6 +572,50 @@ def format_telemetry(telemetry):
         pluto_temp_str, tx_bitrate_str)
 
 
+def load_testcard_overlay_config(source_path, width, height):
+    """When SOURCE == "testcard": look up this test card image's
+    callsign/freq/volume/elapsed-time overlay placement, font and color
+    from TESTCARD_OVERLAY_CONFIG_PATH (testcard_overlays.yaml) - see that
+    file's own comments for the exact format.
+
+    Keyed by the image's filename without extension (so renaming/adding a
+    file under testcards/ is enough to give it its own tuned config - see
+    select_testcard_file()) and "<width>x<height>" for the active
+    profile's resolution. Anything not found for that specific
+    image+resolution falls back field-by-field to the file's "default"
+    section, so most test cards only need a handful of overridden fields,
+    not a full copy of all four overlays' settings.
+    """
+    with open(TESTCARD_OVERLAY_CONFIG_PATH) as f:
+        all_config = yaml.safe_load(f)
+
+    image_name = os.path.splitext(os.path.basename(source_path))[0]
+    resolution_key = "{}x{}".format(width, height)
+    overrides = all_config.get(image_name, {}).get(resolution_key, {})
+
+    merged = {}
+    for overlay_name, default_fields in all_config["default"].items():
+        merged[overlay_name] = dict(default_fields)
+        merged[overlay_name].update(overrides.get(overlay_name, {}))
+    return merged
+
+
+def format_freq_banner(freq, is_rest):
+    """When SOURCE == "testcard": blank during a silent rest (see
+    TESTCARD_TONE_SCHEDULE), otherwise the frequency currently playing.
+    """
+    return "" if is_rest else "{} Hz".format(freq)
+
+
+def format_volume_banner(volume, is_rest):
+    """When SOURCE == "testcard": blank during a silent rest (see
+    TESTCARD_TONE_SCHEDULE), otherwise the volume currently playing.
+    volume is audiotestsrc's own linear 0.0-1.0 scale, shown as a plain
+    percentage of that max (not a perceptual/dB loudness scale).
+    """
+    return "" if is_rest else "Vol {:.0f}%".format(volume * 100)
+
+
 def select_video_file(profile):
     """When SOURCE == "video", list the pre-processed videos available for
     the active profile's resolution (see preprocess_videos.py, which fills
@@ -475,6 +651,40 @@ def select_video_file(profile):
     video_path = os.path.join(video_dir, selected)
     print("Selected: {}".format(video_path))
     return video_path
+
+
+def select_testcard_file():
+    """When SOURCE == "testcard", list the static test-card images available
+    in testcards/ next to this script and let the user pick one by number.
+    Unlike select_video_file(), this isn't split into per-resolution
+    folders - the image gets scaled to the active profile's resolution by
+    the pipeline itself, same as any other still frame.
+    """
+    testcard_dir = os.path.join(SCRIPT_DIR, "testcards")
+    print("Looking for test cards in {}...".format(testcard_dir))
+
+    if not os.path.isdir(testcard_dir):
+        raise SystemExit("No testcards folder found: {}".format(testcard_dir))
+
+    files = sorted(name for name in os.listdir(testcard_dir)
+                    if name.lower().endswith((".png", ".jpg", ".jpeg")))
+    if not files:
+        raise SystemExit("No test card images found in {}".format(testcard_dir))
+
+    print("Available test cards:")
+    for i, name in enumerate(files, start=1):
+        print("  {}) {}".format(i, name))
+
+    while True:
+        choice = input("Select a test card [1-{}]: ".format(len(files))).strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(files):
+            selected = files[int(choice) - 1]
+            break
+        print("Invalid choice '{}', try again.".format(choice))
+
+    testcard_path = os.path.join(testcard_dir, selected)
+    print("Selected: {}".format(testcard_path))
+    return testcard_path
 
 
 def select_camera_device():
@@ -536,23 +746,7 @@ def select_camera_device():
 
 def build_pipeline_description(ip, profile, source_path=None):
     width, height = profile["resolution"]
-    if (width, height) not in OVERLAY_STYLES:
-        raise SystemExit(
-            "No OVERLAY_STYLES entry for {}x{} - add one (see the comment "
-            "above OVERLAY_STYLES).".format(width, height))
-    overlay_style = OVERLAY_STYLES[(width, height)]
-    # valignment=bottom anchors to Pango's logical text box, which reserves
-    # descender space these strings never use (no g/j/p/q/y - all caps and
-    # digits), leaving dead space under the glyphs. Anchoring from the top
-    # instead avoids that, so compute the exact pixel offset here. That
-    # descender reservation scales with font size - the original "-6" fudge
-    # was measured by eye at the baseline 960x540/11pt combination, so scale
-    # it proportionally for other font sizes rather than guessing a fresh
-    # constant per resolution.
-    bottom_text_font_size = overlay_style["bottom_text_font_size"]
-    descender_fudge = round(bottom_text_font_size * 6 / 11)
-    bottom_bar_text_ypad = (height - overlay_style["bottom_bar_height"]
-                             + overlay_style["bottom_bar_text_margin"] - descender_fudge)
+    testcard_mode = (SOURCE == "testcard")
     if TX_OUTPUT == "pluto":
         # Do not send this VBR mux directly to Pluto. Feed the local FFmpeg
         # relay instead; it adds null packets and forwards a correctly paced
@@ -564,27 +758,72 @@ def build_pipeline_description(ip, profile, source_path=None):
     parts = [
         "mpegtsmux name=mux alignment=7 !",
         mux_sink,
+    ]
 
-        "compositor name=comp",
-        "sink_0::xpos=0 sink_0::ypos=0",
-        "sink_1::xpos=0 sink_1::ypos=0 sink_1::alpha={}".format(
-            overlay_style["top_bar_alpha"]),
-        "sink_2::xpos=0 sink_2::ypos={} sink_2::alpha={}".format(
-            height - overlay_style["bottom_bar_height"], overlay_style["bottom_bar_alpha"]),
-        "!",
-        "videoconvert !",
-        "textoverlay text=\"{}\" halignment=center".format(TITLE_TEXT),
-        "valignment=top ypad=0 shaded-background=false font-desc=\"Sans {}\" !".format(
-            overlay_style["title_font_size"]),
-        "textoverlay text=\"{}\" halignment=left xpad=10".format(CALLSIGN),
-        "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
-            bottom_bar_text_ypad, bottom_text_font_size),
-        "clockoverlay time-format=\"%H:%M:%S UTC\" halignment=right xpad=10",
-        "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
-            bottom_bar_text_ypad, bottom_text_font_size),
-        "textoverlay name=telemetry_overlay text=\"\" halignment=center",
-        "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
-            bottom_bar_text_ypad, bottom_text_font_size),
+    if testcard_mode:
+        # Testcard mode never uses the title/bars/clock/telemetry overlay
+        # system below - a still test-card image is its own "chrome" and
+        # doesn't need it (see TESTCARD_OVERLAY_CONFIG_PATH above for the one thing
+        # still burned in, added directly in the "testcard" SOURCE branch
+        # further down). The source's video links straight into the encode
+        # chain via this named junction instead of a compositor.
+        video_sink = "video_in."
+        parts += ["videoconvert name=video_in !"]
+    else:
+        if (width, height) not in OVERLAY_STYLES:
+            raise SystemExit(
+                "No OVERLAY_STYLES entry for {}x{} - add one (see the comment "
+                "above OVERLAY_STYLES).".format(width, height))
+        overlay_style = OVERLAY_STYLES[(width, height)]
+        if MARQUEE_ENABLED and (width, height) not in MARQUEE_STYLES:
+            raise SystemExit(
+                "No MARQUEE_STYLES entry for {}x{} - add one (see the comment "
+                "above MARQUEE_STYLES).".format(width, height))
+        # valignment=bottom anchors to Pango's logical text box, which reserves
+        # descender space these strings never use (no g/j/p/q/y - all caps and
+        # digits), leaving dead space under the glyphs. Anchoring from the top
+        # instead avoids that, so compute the exact pixel offset here. That
+        # descender reservation scales with font size - the original "-6" fudge
+        # was measured by eye at the baseline 960x540/11pt combination, so scale
+        # it proportionally for other font sizes rather than guessing a fresh
+        # constant per resolution.
+        bottom_text_font_size = overlay_style["bottom_text_font_size"]
+        descender_fudge = round(bottom_text_font_size * 6 / 11)
+        bottom_bar_text_ypad = (height - overlay_style["bottom_bar_height"]
+                                 + overlay_style["bottom_bar_text_margin"] - descender_fudge)
+        video_sink = "comp."
+        parts += [
+            "compositor name=comp",
+            "sink_0::xpos=0 sink_0::ypos=0",
+            "sink_1::xpos=0 sink_1::ypos=0 sink_1::alpha={}".format(
+                overlay_style["top_bar_alpha"]),
+            "sink_2::xpos=0 sink_2::ypos={} sink_2::alpha={}".format(
+                height - overlay_style["bottom_bar_height"], overlay_style["bottom_bar_alpha"]),
+            "!",
+            "videoconvert !",
+            "textoverlay text=\"{}\" halignment=center".format(TITLE_TEXT),
+            "valignment=top ypad=0 shaded-background=false font-desc=\"Sans {}\" !".format(
+                overlay_style["title_font_size"]),
+            "textoverlay text=\"{}\" halignment=left xpad=10".format(CALLSIGN),
+            "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+                bottom_bar_text_ypad, bottom_text_font_size),
+            "clockoverlay time-format=\"%H:%M:%S UTC\" halignment=right xpad=10",
+            "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+                bottom_bar_text_ypad, bottom_text_font_size),
+            "textoverlay name=telemetry_overlay text=\"\" halignment=center",
+            "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+                bottom_bar_text_ypad, bottom_text_font_size),
+        ]
+        if MARQUEE_ENABLED:
+            marquee_style = MARQUEE_STYLES[(width, height)]
+            parts += [
+                "textoverlay name=marquee_overlay text=\"{}\"".format(MARQUEE_TEXT),
+                "halignment=absolute x-absolute={}".format(marquee_style["x_start_px"] / width),
+                "valignment=absolute y-absolute={}".format(marquee_style["y_px"] / height),
+                "shaded-background=false font-desc=\"Sans {}\" !".format(MARQUEE_FONT_SIZE),
+            ]
+
+    parts += [
         "nvvidconv ! video/x-raw(memory:NVMM),format=NV12 !",
         "queue !",
         "nvv4l2h265enc bitrate={} insert-sps-pps=true iframeinterval={} !".format(
@@ -658,20 +897,80 @@ def build_pipeline_description(ip, profile, source_path=None):
             "aacparse !",
             "queue ! mux.",
         ]
+    elif SOURCE == "testcard":
+        overlay_config = load_testcard_overlay_config(source_path, width, height)
+        callsign_cfg = overlay_config["callsign"]
+        freq_cfg = overlay_config["freq"]
+        volume_cfg = overlay_config["volume"]
+        elapsed_cfg = overlay_config["elapsed"]
+        parts += [
+            # Same dynamic-pad idiom as the "video" branch above, but a still
+            # image has no audio stream to pull from - imagefreeze turns the
+            # single decoded frame into a continuous live stream.
+            "uridecodebin uri={} name=filesrc".format(Gst.filename_to_uri(source_path)),
+
+            "filesrc. ! queue ! imagefreeze ! videoconvert ! videorate ! video/x-raw,framerate={}/1 !".format(FPS),
+            "videoscale ! video/x-raw,width={},height={} !".format(width, height),
+            "videoconvert !",
+            # Independent of the title/bars/clock/telemetry overlay system -
+            # testcard mode never uses that (see build_pipeline_description
+            # above). x-absolute/y-absolute are 0-1-of-frame fractions, same
+            # convention as the marquee, hence the /width and /height here.
+            # Position/font/color come from TESTCARD_OVERLAY_CONFIG_PATH
+            # (testcard_overlays.yaml), not fixed constants - see
+            # load_testcard_overlay_config().
+            "textoverlay name=testcard_callsign text=\"{}\" halignment=absolute".format(CALLSIGN),
+            "x-absolute={} valignment=absolute y-absolute={}".format(
+                callsign_cfg["x"] / width, callsign_cfg["y"] / height),
+            "shaded-background=false color={} draw-shadow=false draw-outline=false font-desc=\"{} {}\" !".format(
+                callsign_cfg["color"], callsign_cfg["font"], callsign_cfg["size"]),
+            # Text is empty here - set to the starting frequency/volume and
+            # then updated on every rotation in main().
+            "textoverlay name=testcard_freq_banner text=\"\" halignment=absolute",
+            "x-absolute={} valignment=absolute y-absolute={}".format(
+                freq_cfg["x"] / width, freq_cfg["y"] / height),
+            "shaded-background=false color={} draw-shadow=false draw-outline=false font-desc=\"{} {}\" !".format(
+                freq_cfg["color"], freq_cfg["font"], freq_cfg["size"]),
+            "textoverlay name=testcard_volume_banner text=\"\" halignment=absolute",
+            "x-absolute={} valignment=absolute y-absolute={}".format(
+                volume_cfg["x"] / width, volume_cfg["y"] / height),
+            "shaded-background=false color={} draw-shadow=false draw-outline=false font-desc=\"{} {}\" !".format(
+                volume_cfg["color"], volume_cfg["font"], volume_cfg["size"]),
+            # Text set/updated in main() from time.monotonic() - START_TIME -
+            # see TESTCARD_TIME_OVERLAY_TICK_SECONDS above for why this
+            # isn't the built-in timeoverlay element.
+            "textoverlay name=testcard_elapsed_ms text=\"\" halignment=absolute",
+            "x-absolute={} valignment=absolute y-absolute={}".format(
+                elapsed_cfg["x"] / width, elapsed_cfg["y"] / height),
+            "shaded-background=false color={} draw-shadow=false draw-outline=false font-desc=\"{} {}\" !".format(
+                elapsed_cfg["color"], elapsed_cfg["font"], elapsed_cfg["size"]),
+            "{}".format(video_sink),
+
+            # name=tone_source so main() can step it through the melody live
+            # via set_property() - see TESTCARD_TONE_MELODY above.
+            "audiotestsrc name=tone_source wave=sine freq={} volume={} is-live=true !".format(
+                TESTCARD_TONE_SCHEDULE[0][0], TESTCARD_MELODY_VOLUMES[0]),
+            "audioconvert ! audioresample ! audiorate !",
+            "audio/x-raw,format=S16LE,rate=48000,channels=1 !",
+            "voaacenc bitrate={} !".format(profile["audio_bitrate_kbps"] * 1000),
+            "aacparse !",
+            "queue ! mux.",
+        ]
     else:
         raise ValueError("Unknown SOURCE {!r}".format(SOURCE))
 
-    parts += [
-        "videotestsrc pattern=black is-live=true !",
-        "video/x-raw,width={},height={},framerate={}/1 !".format(
-            width, overlay_style["top_bar_height"], FPS),
-        "videoconvert ! comp.",
+    if not testcard_mode:
+        parts += [
+            "videotestsrc pattern=black is-live=true !",
+            "video/x-raw,width={},height={},framerate={}/1 !".format(
+                width, overlay_style["top_bar_height"], FPS),
+            "videoconvert ! comp.",
 
-        "videotestsrc pattern=black is-live=true !",
-        "video/x-raw,width={},height={},framerate={}/1 !".format(
-            width, overlay_style["bottom_bar_height"], FPS),
-        "videoconvert ! comp.",
-    ]
+            "videotestsrc pattern=black is-live=true !",
+            "video/x-raw,width={},height={},framerate={}/1 !".format(
+                width, overlay_style["bottom_bar_height"], FPS),
+            "videoconvert ! comp.",
+        ]
 
     return " ".join(parts)
 
@@ -688,6 +987,7 @@ def main():
     print_banner()
     profile = PROFILES[PROFILE]
     width, height = profile["resolution"]
+    marquee_style = MARQUEE_STYLES[(width, height)] if MARQUEE_ENABLED else None
     log("🎛️  Profile '{}': SR={} FEC={} {}x{} video={}kbps audio={}kbps".format(
         PROFILE, profile["symbol_rate"], profile["fec"], width, height,
         profile["video_bitrate_kbps"], profile["audio_bitrate_kbps"]))
@@ -695,7 +995,12 @@ def main():
     if SOURCE == "camera":
         global CAMERA_DEVICE, CAMERA_IS_CSI
         CAMERA_DEVICE, CAMERA_IS_CSI = select_camera_device()
-    source_path = select_video_file(profile) if SOURCE == "video" else None
+    if SOURCE == "video":
+        source_path = select_video_file(profile)
+    elif SOURCE == "testcard":
+        source_path = select_testcard_file()
+    else:
+        source_path = None
 
     Gst.init(None)
 
@@ -730,8 +1035,27 @@ def main():
         log("🎬 Starting video stream...")
         gst_pipeline = Gst.parse_launch(pipeline_description)
         telemetry_overlay = gst_pipeline.get_by_name("telemetry_overlay")
-        # Only exists when SOURCE == "video" (see build_pipeline_description).
+        # Only exists when MARQUEE_ENABLED.
+        marquee_overlay = gst_pipeline.get_by_name("marquee_overlay")
+        # Only exists when SOURCE == "video" or "testcard" (see
+        # build_pipeline_description). For "testcard" the duration query
+        # below never reports a positive duration (a still image/imagefreeze
+        # has none), so the EOS watchdog naturally never fires and the card
+        # loops until Ctrl+C - no separate code path needed.
         video_source = gst_pipeline.get_by_name("filesrc")
+        # Only exist when SOURCE == "testcard" (see build_pipeline_description).
+        tone_source = gst_pipeline.get_by_name("tone_source")
+        freq_banner_overlay = gst_pipeline.get_by_name("testcard_freq_banner")
+        volume_banner_overlay = gst_pipeline.get_by_name("testcard_volume_banner")
+        if freq_banner_overlay is not None or volume_banner_overlay is not None:
+            start_freq, _, start_is_rest = TESTCARD_TONE_SCHEDULE[0]
+            if freq_banner_overlay is not None:
+                freq_banner_overlay.set_property("text", format_freq_banner(start_freq, start_is_rest))
+            if volume_banner_overlay is not None:
+                volume_banner_overlay.set_property(
+                    "text", format_volume_banner(TESTCARD_MELODY_VOLUMES[0], start_is_rest))
+        # Only exists when SOURCE == "testcard" (see build_pipeline_description).
+        elapsed_overlay = gst_pipeline.get_by_name("testcard_elapsed_ms")
         bus = gst_pipeline.get_bus()
         gst_pipeline.set_state(Gst.State.PLAYING)
 
@@ -744,15 +1068,47 @@ def main():
         else:
             print()
             log("💾 Writing to '{}'. Press Ctrl+C to stop.".format(TX_OUTPUT_FILE))
+        # The marquee and the testcard tone both need a faster wake-up than
+        # plain telemetry to stay on schedule (smooth motion for the
+        # marquee, on-time steps for the tone) - only pay that extra polling
+        # cost when one of them is actually active.
+        poll_interval_seconds = TELEMETRY_UPDATE_SECONDS
+        if marquee_overlay is not None:
+            poll_interval_seconds = min(poll_interval_seconds, MARQUEE_TICK_SECONDS)
+        if tone_source is not None:
+            poll_interval_seconds = min(poll_interval_seconds, TESTCARD_MELODY_TICK_SECONDS)
+        if elapsed_overlay is not None:
+            poll_interval_seconds = min(poll_interval_seconds, TESTCARD_TIME_OVERLAY_TICK_SECONDS)
+        last_telemetry_update = 0.0
+        last_elapsed_update = 0.0
+        marquee_start_time = time.monotonic()
+        last_tone_change = time.monotonic()
+        tone_index = 0
+        melody_play_index = 0  # which TESTCARD_MELODY_VOLUMES entry the current play-through uses
+        # FIFO of (freq, volume, apply_time) tuples between the banner text
+        # switching to a new note and the actual audiotestsrc freq/volume
+        # change being applied TESTCARD_AUDIO_DELAY_SECONDS later - see that
+        # constant. A queue, not a single pending slot: if the delay is
+        # close to or longer than a note's duration, more than one change
+        # can be in flight at once, and a single slot would silently
+        # drop/skip notes instead of just delaying them.
+        pending_tone_changes = []
         while True:
             message = bus.timed_pop_filtered(
-                int(TELEMETRY_UPDATE_SECONDS * Gst.SECOND),
-                Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                int(poll_interval_seconds * Gst.SECOND),
+                Gst.MessageType.ERROR | Gst.MessageType.EOS | Gst.MessageType.WARNING)
             if message is not None:
                 if message.type == Gst.MessageType.ERROR:
                     error, debug = message.parse_error()
                     raise RuntimeError("GStreamer error: {} ({})".format(error, debug))
-                break  # EOS - the video finished; transmission ends here.
+                if message.type == Gst.MessageType.WARNING:
+                    warning, debug = message.parse_warning()
+                    log("⚠️  GStreamer warning from {}: {} ({})".format(
+                        message.src.get_name(), warning, debug))
+                    continue  # not fatal - keep running, just surface it
+                log("🔚 EOS on the bus from {} - transmission ends here.".format(
+                    message.src.get_name()))
+                break
             if video_source is not None:
                 ok_dur, duration = video_source.query_duration(Gst.Format.TIME)
                 ok_pos, position = video_source.query_position(Gst.Format.TIME)
@@ -760,8 +1116,57 @@ def main():
                         and position >= duration - VIDEO_END_MARGIN_SECONDS * Gst.SECOND):
                     log("🏁 Video finished; transmission ends here.")
                     break
-            if telemetry_overlay is not None:
+            now = time.monotonic()
+            if (telemetry_overlay is not None
+                    and now - last_telemetry_update >= TELEMETRY_UPDATE_SECONDS):
                 telemetry_overlay.set_property("text", format_telemetry(telemetry))
+                last_telemetry_update = now
+            if (elapsed_overlay is not None
+                    and now - last_elapsed_update >= TESTCARD_TIME_OVERLAY_TICK_SECONDS):
+                # Same "[Xms]" format and time.monotonic() - START_TIME
+                # reference as log() - see TESTCARD_TIME_OVERLAY_* above.
+                elapsed_overlay.set_property(
+                    "text", "[{:.0f}ms]".format((now - START_TIME) * 1000))
+                last_elapsed_update = now
+            if (tone_source is not None
+                    and now - last_tone_change >= TESTCARD_TONE_SCHEDULE[tone_index][1]):
+                tone_index = (tone_index + 1) % len(TESTCARD_TONE_SCHEDULE)
+                if tone_index == 0:
+                    # Wrapped past the rest back to the first note - the
+                    # tune is repeating, so move on to the next volume
+                    # level (only changes once per full play-through, not
+                    # note-to-note - see TESTCARD_MELODY_VOLUMES above).
+                    melody_play_index = (melody_play_index + 1) % len(TESTCARD_MELODY_VOLUMES)
+                new_freq, _, new_is_rest = TESTCARD_TONE_SCHEDULE[tone_index]
+                new_volume = 0.0 if new_is_rest else TESTCARD_MELODY_VOLUMES[melody_play_index]
+                # Banners switch right on schedule; the actual tone follows
+                # TESTCARD_AUDIO_DELAY_SECONDS later, to compensate for the
+                # video path's extra encode/mux latency vs. audio.
+                if freq_banner_overlay is not None:
+                    freq_banner_overlay.set_property(
+                        "text", format_freq_banner(new_freq, new_is_rest))
+                if volume_banner_overlay is not None:
+                    volume_banner_overlay.set_property(
+                        "text", format_volume_banner(new_volume, new_is_rest))
+                pending_tone_changes.append(
+                    (new_freq, new_volume, now + TESTCARD_AUDIO_DELAY_SECONDS))
+                last_tone_change = now
+            while pending_tone_changes and now >= pending_tone_changes[0][2]:
+                freq_to_apply, volume_to_apply, _ = pending_tone_changes.pop(0)
+                tone_source.set_property("freq", freq_to_apply)
+                tone_source.set_property("volume", volume_to_apply)
+            if marquee_overlay is not None:
+                # Sweeps x-absolute from x_start_px to x_end_px (see
+                # MARQUEE_STYLES' comment for what those units mean) and
+                # repeats forever via a plain modulo on wall-clock time.
+                # GStreamer's property is a 0-1-of-width fraction, not
+                # pixels, hence the /width here.
+                sweep_fraction = ((now - marquee_start_time) % MARQUEE_SCROLL_PERIOD_SECONDS
+                                   / MARQUEE_SCROLL_PERIOD_SECONDS)
+                x_start_px = marquee_style["x_start_px"]
+                x_end_px = marquee_style["x_end_px"]
+                x_px = x_start_px + (x_end_px - x_start_px) * sweep_fraction
+                marquee_overlay.set_property("x-absolute", x_px / width)
     except KeyboardInterrupt:
         pass
     finally:
