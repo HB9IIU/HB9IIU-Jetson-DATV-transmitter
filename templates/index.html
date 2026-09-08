@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Static interface concept for a Jetson Nano DATV transmitter">
+  <title>Jetson DATV — Static UI Concept</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/datv.css') }}" rel="stylesheet">
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg sticky-top">
+    <div class="container-xxl py-2">
+      <a class="navbar-brand fs-4" href="#" aria-label="Jetson DATV home">JETSON <span class="text-primary">DATV</span></a>
+      <button class="navbar-toggler" type="button" disabled aria-label="Navigation unavailable in static mockup"><span class="navbar-toggler-icon"></span></button>
+      <div class="collapse navbar-collapse">
+        <ul class="navbar-nav ms-5 gap-lg-3">
+          <li class="nav-item"><span class="nav-link active">Home</span></li>
+          <li class="nav-item"><span class="nav-link">Setup</span></li>
+          <li class="nav-item"><span class="nav-link">Status</span></li>
+          <li class="nav-item"><span class="nav-link">Settings</span></li>
+        </ul>
+        <div class="ms-auto d-flex align-items-center gap-2 small text-muted-custom"><span class="status-dot"></span> Interface preview</div>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container-xxl py-4 py-lg-5">
+    <header class="mb-4">
+      <div class="eyebrow mb-2">DVB-S2 TRANSMISSION CONTROL</div>
+      <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-end gap-3">
+        <div>
+          <h1 class="display-6 fw-bold mb-2">Get on air in three steps</h1>
+          <p class="text-muted-custom mb-0">Simple, safety-first control for your Jetson Nano and PlutoSDR.</p>
+        </div>
+        <div class="small text-muted-custom">Static design preview · controls are inactive</div>
+      </div>
+    </header>
+
+    <section class="row g-3 g-xl-4 justify-content-xl-between" aria-label="Transmission setup">
+      <div class="col-12 col-xl-4">
+        <article class="surface step-card p-3 p-lg-4">
+          <div class="d-flex align-items-center gap-3 mb-4"><span class="step-number">1</span><h2 class="h4 mb-0">Select source</h2></div>
+
+          <div class="source-choice mb-4" role="group" aria-label="Source type">
+            <input class="btn-check" type="radio" name="source-type" id="source-camera" value="camera" checked>
+            <label class="source-choice-btn" for="source-camera"><span class="source-choice-icon">●</span><span><strong>Camera</strong><small>Live video source</small></span></label>
+            <input class="btn-check" type="radio" name="source-type" id="source-file" value="file">
+            <label class="source-choice-btn" for="source-file"><span class="source-choice-icon">▶</span><span><strong>File</strong><small>Testcard or video</small></span></label>
+          </div>
+
+          <div id="camera-source-panel">
+            <div class="preview mb-3" id="camera-preview" aria-label="Live camera preview">
+              <div class="preview-message" id="preview-message">CAMERA PREVIEW</div>
+              <img id="camera-preview-image" alt="Selected camera preview">
+            </div>
+            <label class="form-label fw-semibold" for="video-source">Select camera</label>
+            <select class="form-select mb-3" id="video-source" aria-label="Camera source">
+              {% for device in video_devices %}
+              <option value="{{ device.value }}" data-preview-url="{{ url_for('camera_preview', device=device.value) }}">{{ device.label }}</option>
+              {% else %}
+              <option value="" disabled selected>No camera detected</option>
+              {% endfor %}
+            </select>
+            <label class="form-label fw-semibold" for="audio-source">Select audio</label>
+            <select class="form-select" id="audio-source" aria-label="Audio source">
+              {% for device in audio_devices %}
+              <option value="{{ device.value }}">{{ device.label }}</option>
+              {% else %}
+              <option value="" disabled selected>No audio input detected</option>
+              {% endfor %}
+              <option>Audio disabled</option>
+            </select>
+          </div>
+
+          <div id="file-source-panel" class="d-none">
+            <div class="source-choice mb-3" role="group" aria-label="File source type">
+              <input class="btn-check" type="radio" name="file-type" id="file-testcard" value="testcard" checked>
+              <label class="source-choice-btn" for="file-testcard"><span class="source-choice-icon">▦</span><span><strong>Testcard</strong><small>Still test image</small></span></label>
+              <input class="btn-check" type="radio" name="file-type" id="file-video" value="video">
+              <label class="source-choice-btn" for="file-video"><span class="source-choice-icon">▶</span><span><strong>Video</strong><small>Prepared movie</small></span></label>
+            </div>
+
+            <div class="preview mb-3" id="file-preview" aria-label="Selected file preview">
+              <div class="preview-message" id="file-preview-message">SELECT A FILE</div>
+              <img id="file-preview-image" alt="Selected file preview">
+            </div>
+
+            <div id="testcard-options">
+              <label class="form-label fw-semibold" for="testcard-source">Select testcard</label>
+              <select class="form-select mb-3" id="testcard-source">
+                {% for testcard in testcards %}
+                <option value="{{ testcard.value }}" data-preview-url="{{ url_for('testcard_preview', filename=testcard.value) }}">{{ testcard.label }}</option>
+                {% else %}
+                <option value="">No testcards found</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div id="video-options" class="d-none">
+              <label class="form-label fw-semibold" for="prepared-video">Select prepared video</label>
+              <select class="form-select mb-3" id="prepared-video">
+                {% for video in prepared_videos %}
+                <option value="{{ video.value }}" data-preview-url="{{ url_for('video_thumbnail', video=video.value) }}">{{ video.label }}</option>
+                {% else %}
+                <option value="">No prepared videos found</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div class="col-12 col-xl-8">
+        <article class="surface step-card p-3 p-lg-4">
+          <div class="d-flex align-items-center gap-3 mb-4"><span class="step-number">2</span><h2 class="h4 mb-0">Configure signal</h2></div>
+          <div class="batc-panel mb-4">
+            <div class="d-flex justify-content-between align-items-center px-3 pt-3 pb-2">
+              <div>
+                <div class="fw-semibold">BATC wideband spectrum</div>
+                <div class="small text-muted-custom">QO-100 · live BATC FFT</div>
+              </div>
+              <span class="badge rounded-pill text-bg-secondary" id="batc-status">CONNECTING</span>
+            </div>
+            <div class="batc-spectrum" aria-label="Live BATC QO-100 wideband spectrum">
+              <canvas id="batc-spectrum-canvas"></canvas>
+            </div>
+          </div>
+          <div class="row g-3 align-items-end">
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-semibold" for="frequency">Frequency</label>
+              <div class="input-group"><input class="form-control" id="frequency" value="" placeholder="Select a green slot" aria-label="Frequency" readonly><span class="input-group-text">MHz</span></div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-semibold" for="symbol-rate">Symbol rate</label>
+              <div class="input-group"><select class="form-select signal-select" id="symbol-rate" aria-label="Symbol rate"><option>250</option><option selected>333</option><option>500</option></select><span class="input-group-text">kS/s</span></div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-semibold" for="fec">FEC</label>
+              <select class="form-select signal-select" id="fec" aria-label="Forward error correction"><option>2/3</option><option selected>3/4</option></select>
+            </div>
+          </div>
+          <div class="rounded-3 p-3 mt-4" style="background:#0a1721;border:1px solid #243d50">
+            <div class="small text-muted-custom mb-1">Signal summary</div>
+            <div class="fw-semibold" id="signal-summary">DVB-S2 · QPSK · Select a frequency · 333 kS/s · FEC 3/4</div>
+          </div>
+        </article>
+      </div>
+
+      <div class="col-12 col-xl-12">
+        <article class="surface step-card p-3 p-lg-4">
+          <div class="d-flex align-items-center gap-3 mb-4"><span class="step-number">3</span><h2 class="h4 mb-0">Go live</h2></div>
+          <div class="d-flex justify-content-between align-items-center mb-2"><label class="form-label fw-semibold mb-0" for="tx-gain">TX power (gain)</label><span class="gain-value" id="tx-gain-value">−40 dB</span></div>
+          <input class="form-range" type="range" id="tx-gain" min="-40" max="0" value="-40" aria-label="TX gain">
+          <div class="d-flex justify-content-between small text-muted-custom mb-4"><span>−40 dB</span><span>0 dB</span></div>
+
+
+          <div class="row g-2">
+            <div class="col-12 col-md-6"><button class="btn btn-success btn-lg fw-bold w-100 btn-static" type="button" aria-disabled="true">▶ Start stream</button></div>
+            <div class="col-12 col-md-6"><button class="btn btn-danger btn-lg fw-bold w-100" type="button" disabled>Enable TX</button></div>
+
+          </div>
+
+        </article>
+      </div>
+    </section>
+
+    <section class="surface mt-4 p-3 p-lg-4" aria-label="Advanced settings placeholder">
+      <div class="advanced-row d-flex align-items-center justify-content-between"><div><span class="me-2">⚙</span><strong>Advanced</strong><span class="text-muted-custom ms-2 d-none d-sm-inline">Video, audio, modulation and network settings</span></div><span aria-hidden="true">⌄</span></div>
+    </section>
+
+    <section class="row g-3 g-xl-4 mt-1" aria-label="Live monitoring">
+      <div class="col-12 col-xl-7">
+        <article class="surface p-3 p-lg-4 h-100">
+          <div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h5 mb-0">Spectrum</h2><span class="small text-muted-custom">Center 1255.500 MHz</span></div>
+          <div class="spectrum rounded-3 border border-secondary-subtle" aria-label="Static spectrum placeholder">
+            <span class="spectrum-label" style="left:.7rem;top:.6rem">−20</span><span class="spectrum-label" style="left:.7rem;bottom:.6rem">−100 dB</span>
+            <svg viewBox="0 0 900 240" preserveAspectRatio="none" role="img" aria-label="Example DVB-S2 spectrum trace">
+              <defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1688ff" stop-opacity=".52"/><stop offset="1" stop-color="#1688ff" stop-opacity=".03"/></linearGradient></defs>
+              <path d="M0 205 L35 198 L70 207 L105 199 L140 205 L175 201 L210 206 L245 198 L280 205 L315 202 L345 185 L365 92 L385 83 L515 83 L535 94 L555 187 L585 201 L620 206 L655 199 L690 204 L725 198 L760 206 L795 201 L830 205 L865 198 L900 204 L900 240 L0 240 Z" fill="url(#fill)"/>
+              <path d="M0 205 L35 198 L70 207 L105 199 L140 205 L175 201 L210 206 L245 198 L280 205 L315 202 L345 185 L365 92 L385 83 L515 83 L535 94 L555 187 L585 201 L620 206 L655 199 L690 204 L725 198 L760 206 L795 201 L830 205 L865 198 L900 204" fill="none" stroke="#2196ff" stroke-width="4"/>
+            </svg>
+          </div>
+        </article>
+      </div>
+
+      <div class="col-12 col-xl-5">
+        <article class="surface p-3 p-lg-4 h-100">
+          <div class="d-flex justify-content-between align-items-center mb-4"><h2 class="h5 mb-0">Telemetry</h2><span class="small text-success fw-semibold"><span class="status-dot me-2"></span>PlutoSDR connected</span></div>
+          <div class="d-grid gap-4">
+            <div><div class="d-flex justify-content-between mb-2"><span>CPU</span><span class="metric-value">54 °C</span></div><div class="meter"><span style="width:54%"></span></div></div>
+            <div><div class="d-flex justify-content-between mb-2"><span>GPU</span><span class="metric-value">46 °C</span></div><div class="meter"><span style="width:46%"></span></div></div>
+            <div><div class="d-flex justify-content-between mb-2"><span>Memory</span><span class="metric-value">41%</span></div><div class="meter"><span style="width:41%"></span></div></div>
+            <div><div class="d-flex justify-content-between mb-2"><span>Network</span><span class="metric-value text-success">● OK</span></div><div class="meter"><span style="width:78%"></span></div></div>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="container-xxl pb-4 small text-center">JETSON DATV · Static interface concept · No hardware actions are connected</footer>
+  <script src="{{ url_for('static', filename='js/datv.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/batc-spectrum.js') }}" defer></script>
+</body>
+</html>
+
+
+
+
+
+
