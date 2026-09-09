@@ -47,11 +47,19 @@ time even for file output. A ~90s test clip means ~90s per trial, so a full
 bisection (a handful of trials) plus the two final PSNR comparison runs
 takes on the order of 15-20 minutes per profile.
 
-Loops through every profile in datv_tx_plus.py's PROFILES automatically -
-no arguments, no per-profile invocation. With 8 profiles at ~15-20 minutes
-each, a full run is a multi-hour "start it and walk away" job. One
+By default (PROFILES_TO_TUNE below left empty) loops through every profile
+in datv_tx_plus.py's PROFILES automatically. With 8 profiles at ~15-20
+minutes each, a full run is a multi-hour "start it and walk away" job. One
 profile's failure (after exhausting retries) is logged and skipped, not
 fatal to the rest.
+
+Set PROFILES_TO_TUNE to a list of profile names to tune just those instead
+- e.g. after changing a single profile's resolution, a quick sanity check
+on that one profile alone (~15-20 minutes) is enough; you don't need to
+re-run the other 7. A hand-edited constant rather than a command-line
+argument, same convention as PROFILE/SOURCE in datv_tx_plus.py and
+TEST_CLIPS below - so it's just as easy to run from an IDE's Run button as
+from a terminal.
 
 Usage: python tune_profiles.py
 """
@@ -72,6 +80,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORK_DIR = os.path.join(SCRIPT_DIR, "tuning")
 FFMPEG = os.path.join(SCRIPT_DIR, "ffmpeg-static", "ffmpeg")
 FFPROBE = os.path.join(SCRIPT_DIR, "ffmpeg-static", "ffprobe")
+
+# Which profile(s) to tune - edit this directly, then just hit Run (see
+# module docstring for why this is a constant, not a command-line
+# argument). Empty list = every profile in PROFILES (multi-hour).
+PROFILES_TO_TUNE = ["sr500_fec34"]
 
 # Two content types tested so far turned out to matter (2026-09-07 finding:
 # real encoder overshoot depends on motion complexity, not just SR/FEC) - a
@@ -441,9 +454,17 @@ def _trial_worker_main(argv):
 def main():
     os.makedirs(WORK_DIR, exist_ok=True)
 
+    if PROFILES_TO_TUNE:
+        unknown = [name for name in PROFILES_TO_TUNE if name not in tx.PROFILES]
+        if unknown:
+            raise SystemExit("Unknown profile name(s) in PROFILES_TO_TUNE: {} - available: {}".format(
+                ", ".join(unknown), ", ".join(tx.PROFILES)))
+        profile_names = PROFILES_TO_TUNE
+    else:
+        profile_names = list(tx.PROFILES)
+
     results = []
     errors = []
-    profile_names = list(tx.PROFILES)
     run_start = time.monotonic()
     for i, profile_name in enumerate(profile_names, start=1):
         log("=== Profile {}/{}: '{}' (run elapsed so far: {:.0f} min) ===".format(

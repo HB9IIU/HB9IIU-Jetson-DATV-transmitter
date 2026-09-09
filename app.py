@@ -3,15 +3,107 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
-from flask import Flask, Response, abort, render_template, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
+
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    mqtt = None
 
 from camera_preview import stream_camera
+from datv_engine import DatvEngine
 
 app = Flask(__name__)
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+STREAM_ENGINE = DatvEngine(PROJECT_DIR)
 TESTCARD_DIR = os.path.join(PROJECT_DIR, "testcards")
 VIDEO_CATALOG_FOLDER = "preprocessed_1280x720"
+PLUTO_IP = "192.168.2.1"
+PLUTO_MQTT_PORT = 1883
+PLUTO_CALLSIGN = "HB9IIU"
+PLUTO_TELEMETRY = {}
+PLUTO_STATE = {"connected": False, "last_message": 0.0}
+
+
+def _read_number(path, scale=1.0):
+    try:
+        with open(path) as value_file:
+            return float(value_file.read().strip()) * scale
+    except (OSError, ValueError):
+        return None
+
+
+def read_cpu_temperature():
+    for zone in glob.glob("/sys/class/thermal/thermal_zone*"):
+        try:
+            with open(os.path.join(zone, "type")) as type_file:
+                if type_file.read().strip() == "CPU-therm":
+                    return _read_number(os.path.join(zone, "temp"), 0.001)
+        except OSError:
+            continue
+    return None
+
+
+def read_cpu_load():
+    try:
+        return min(100.0, os.getloadavg()[0] / float(os.cpu_count() or 1) * 100.0)
+    except (AttributeError, OSError):
+        return None
+
+
+def read_fan():
+    pwm = _read_number("/sys/devices/pwm-fan/cur_pwm")
+    if pwm is None:
+        pwm = _read_number("/sys/devices/pwm-fan/target_pwm")
+    if pwm is None:
+        return {"pwm": None, "state": "Unavailable"}
+    if pwm <= 0:
+        state = "Off"
+    elif pwm <= 80:
+        state = "Low"
+    elif pwm <= 120:
+        state = "Medium"
+    elif pwm <= 160:
+        state = "High"
+    else:
+        state = "Full"
+    return {"pwm": int(pwm), "state": state}
+
+
+def _start_pluto_telemetry():
+    if mqtt is None:
+        return
+
+    client = mqtt.Client(client_id="jetson-stream-panel")
+    client.username_pw_set("root", "analog")
+    client.reconnect_delay_set(min_delay=1, max_delay=10)
+
+    def on_connect(active_client, _userdata, _flags, result_code):
+        PLUTO_STATE["connected"] = result_code == 0
+        if result_code == 0:
+            active_client.subscribe(
+                "dt/pluto/{}/#".format(PLUTO_CALLSIGN), qos=1)
+
+    def on_disconnect(_client, _userdata, _result_code):
+        PLUTO_STATE["connected"] = False
+
+    def on_message(_client, _userdata, message):
+        prefix = "dt/pluto/{}/".format(PLUTO_CALLSIGN)
+        if message.topic.startswith(prefix):
+            PLUTO_TELEMETRY[message.topic[len(prefix):]] = message.payload.decode(
+                "utf-8", "replace")
+            PLUTO_STATE["last_message"] = time.time()
+
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.on_message = on_message
+    client.connect_async(PLUTO_IP, PLUTO_MQTT_PORT, keepalive=5)
+    client.loop_start()
+
+
+_start_pluto_telemetry()
 
 
 def detect_video_devices():
@@ -106,6 +198,51 @@ def index():
     )
 
 
+@app.route("/api/stream/status")
+def stream_status():
+    return jsonify(STREAM_ENGINE.status())
+
+
+@app.route("/api/stream/start", methods=["POST"])
+def stream_start():
+    data = request.get_json(silent=True) or {}
+    testcard = data.get("testcard", "")
+    if testcard not in {item["value"] for item in detect_testcards()}:
+        return jsonify({"error": "Select a valid testcard"}), 400
+    try:
+        symbol_rate = int(data.get("symbol_rate"))
+        fec = str(data.get("fec"))
+        status_data = STREAM_ENGINE.start_testcard(testcard, symbol_rate, fec)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+    return jsonify(status_data), 202
+
+
+@app.route("/api/stream/stop", methods=["POST"])
+def stream_stop():
+    return jsonify(STREAM_ENGINE.stop())
+
+
+@app.route("/api/telemetry")
+def telemetry():
+    pluto_temperature = None
+    try:
+        pluto_temperature = float(PLUTO_TELEMETRY.get("temperature_ad")) / 1000.0
+    except (TypeError, ValueError):
+        pass
+    connected = (PLUTO_STATE["connected"] and
+                 time.time() - PLUTO_STATE["last_message"] < 10.0)
+    return jsonify({
+        "jetson_cpu_temp_c": read_cpu_temperature(),
+        "jetson_cpu_load_percent": read_cpu_load(),
+        "fan": read_fan(),
+        "pluto_connected": connected,
+        "pluto_temp_c": pluto_temperature if connected else None,
+    })
+
+
 @app.route("/camera-preview.mjpg")
 def camera_preview():
     requested_device = request.args.get("device", "")
@@ -171,3 +308,5 @@ def video_thumbnail():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+
+

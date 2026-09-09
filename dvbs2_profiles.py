@@ -42,7 +42,7 @@ PROFILES = {
     "sr500_fec23": {"symbol_rate": 500000, "fec": "2/3", "resolution": (960, 540),
                     "video_bitrate_kbps": 498, "audio_bitrate_kbps": 32},
     "sr500_fec34": {"symbol_rate": 500000, "fec": "3/4", "resolution": (960, 540),
-                    "video_bitrate_kbps": 570, "audio_bitrate_kbps": 32},
+                    "video_bitrate_kbps": 575, "audio_bitrate_kbps": 32},
     "sr500_fec34_720p": {"symbol_rate": 500000, "fec": "3/4", "resolution": (1280, 720),
                           "video_bitrate_kbps": 575, "audio_bitrate_kbps": 32},
     "sr500_fec23_720p": {"symbol_rate": 500000, "fec": "2/3", "resolution": (1280, 720),

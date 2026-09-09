@@ -156,8 +156,8 @@
 
 
           <div class="row g-2">
-            <div class="col-12 col-md-6"><button class="btn btn-success btn-lg fw-bold w-100 btn-static" type="button" aria-disabled="true">▶ Start stream</button></div>
-            <div class="col-12 col-md-6"><button class="btn btn-danger btn-lg fw-bold w-100" type="button" disabled>Enable TX</button></div>
+            <div class="col-12 col-md-6"><button class="btn btn-success btn-lg fw-bold w-100" id="stream-toggle" type="button">▶ Start stream</button></div>
+            <div class="col-12 col-md-6"><button class="btn btn-danger btn-lg fw-bold w-100" id="tx-toggle" type="button" disabled>Enable TX</button></div>
 
           </div>
 
@@ -169,32 +169,19 @@
       <div class="advanced-row d-flex align-items-center justify-content-between"><div><span class="me-2">⚙</span><strong>Advanced</strong><span class="text-muted-custom ms-2 d-none d-sm-inline">Video, audio, modulation and network settings</span></div><span aria-hidden="true">⌄</span></div>
     </section>
 
-    <section class="row g-3 g-xl-4 mt-1" aria-label="Live monitoring">
-      <div class="col-12 col-xl-7">
-        <article class="surface p-3 p-lg-4 h-100">
-          <div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h5 mb-0">Spectrum</h2><span class="small text-muted-custom">Center 1255.500 MHz</span></div>
-          <div class="spectrum rounded-3 border border-secondary-subtle" aria-label="Static spectrum placeholder">
-            <span class="spectrum-label" style="left:.7rem;top:.6rem">−20</span><span class="spectrum-label" style="left:.7rem;bottom:.6rem">−100 dB</span>
-            <svg viewBox="0 0 900 240" preserveAspectRatio="none" role="img" aria-label="Example DVB-S2 spectrum trace">
-              <defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1688ff" stop-opacity=".52"/><stop offset="1" stop-color="#1688ff" stop-opacity=".03"/></linearGradient></defs>
-              <path d="M0 205 L35 198 L70 207 L105 199 L140 205 L175 201 L210 206 L245 198 L280 205 L315 202 L345 185 L365 92 L385 83 L515 83 L535 94 L555 187 L585 201 L620 206 L655 199 L690 204 L725 198 L760 206 L795 201 L830 205 L865 198 L900 204 L900 240 L0 240 Z" fill="url(#fill)"/>
-              <path d="M0 205 L35 198 L70 207 L105 199 L140 205 L175 201 L210 206 L245 198 L280 205 L315 202 L345 185 L365 92 L385 83 L515 83 L535 94 L555 187 L585 201 L620 206 L655 199 L690 204 L725 198 L760 206 L795 201 L830 205 L865 198 L900 204" fill="none" stroke="#2196ff" stroke-width="4"/>
-            </svg>
-          </div>
-        </article>
-      </div>
-
-      <div class="col-12 col-xl-5">
-        <article class="surface p-3 p-lg-4 h-100">
-          <div class="d-flex justify-content-between align-items-center mb-4"><h2 class="h5 mb-0">Telemetry</h2><span class="small text-success fw-semibold"><span class="status-dot me-2"></span>PlutoSDR connected</span></div>
-          <div class="d-grid gap-4">
-            <div><div class="d-flex justify-content-between mb-2"><span>CPU</span><span class="metric-value">54 °C</span></div><div class="meter"><span style="width:54%"></span></div></div>
-            <div><div class="d-flex justify-content-between mb-2"><span>GPU</span><span class="metric-value">46 °C</span></div><div class="meter"><span style="width:46%"></span></div></div>
-            <div><div class="d-flex justify-content-between mb-2"><span>Memory</span><span class="metric-value">41%</span></div><div class="meter"><span style="width:41%"></span></div></div>
-            <div><div class="d-flex justify-content-between mb-2"><span>Network</span><span class="metric-value text-success">● OK</span></div><div class="meter"><span style="width:78%"></span></div></div>
-          </div>
-        </article>
-      </div>
+    <section class="mt-4" aria-label="Live telemetry">
+      <article class="surface p-3 p-lg-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+          <h2 class="h5 mb-0">Telemetry</h2>
+          <span class="small fw-semibold text-secondary" id="pluto-connection"><span class="telemetry-dot me-2"></span>Pluto disconnected</span>
+        </div>
+        <div class="row g-3 g-lg-4 text-center">
+          <div class="col-6 col-lg"><div class="telemetry-label">Jetson CPU</div><div class="telemetry-value" id="jetson-cpu-temp">-- °C</div></div>
+          <div class="col-6 col-lg"><div class="telemetry-label">CPU load</div><div class="telemetry-value" id="jetson-cpu-load">--%</div></div>
+          <div class="col-6 col-lg"><div class="telemetry-label">Fan</div><div class="telemetry-value" id="fan-state">--</div><div class="small text-muted-custom" id="fan-pwm">PWM --</div></div>
+          <div class="col-6 col-lg"><div class="telemetry-label">Pluto temperature</div><div class="telemetry-value" id="pluto-temp">-- °C</div></div>
+        </div>
+      </article>
     </section>
   </main>
 
@@ -203,6 +190,8 @@
   <script src="{{ url_for('static', filename='js/batc-spectrum.js') }}" defer></script>
 </body>
 </html>
+
+
 
 
 

@@ -28,12 +28,19 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SOURCE_DIR = os.path.join(SCRIPT_DIR, "original videos")
 
 # DATV profile resolutions (see PROFILES in datv_tx_plus.py) -> their
-# pre-processed output folder. Add a 4th entry here if a new profile
+# pre-processed output folder. Add an entry here if a new profile
 # resolution shows up later - no other code needs to change.
+#
+# 1280x720 dropped (2026-09-09): real hardware testing showed 960x540 looks
+# noticeably better than 1280x720 at the same sr500 bitrate (fewer
+# compression mosaics on motion), so video mode no longer uses 720p at any
+# symbol rate - see dvbs2_profiles.py. The sr500_*_720p profile entries stay
+# for the still-open testcard question; if video mode ever needs 720p again,
+# re-add it here and re-run this script to regenerate it losslessly from
+# "original videos/".
 RESOLUTIONS = {
     (640, 360): os.path.join(SCRIPT_DIR, "preprocessed_640x360"),
     (960, 540): os.path.join(SCRIPT_DIR, "preprocessed_960x540"),
-    (1280, 720): os.path.join(SCRIPT_DIR, "preprocessed_1280x720"),
 }
 
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".m4v", ".mov", ".webm", ".mkv"}

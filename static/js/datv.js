@@ -114,3 +114,92 @@ function updateTxGain() {
 }
 txGain?.addEventListener('input', updateTxGain);
 updateTxGain();
+
+function formatTelemetryNumber(value, decimals, suffix) {
+  return typeof value === 'number' ? `${value.toFixed(decimals)}${suffix}` : `--${suffix}`;
+}
+
+async function updateTelemetry() {
+  const connection = document.querySelector('#pluto-connection');
+  try {
+    const response = await fetch('/api/telemetry', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Telemetry request failed');
+    const data = await response.json();
+    document.querySelector('#jetson-cpu-temp').textContent = formatTelemetryNumber(data.jetson_cpu_temp_c, 1, ' °C');
+    document.querySelector('#jetson-cpu-load').textContent = formatTelemetryNumber(data.jetson_cpu_load_percent, 0, '%');
+    document.querySelector('#fan-state').textContent = data.fan?.state || '--';
+    document.querySelector('#fan-pwm').textContent = typeof data.fan?.pwm === 'number' ? `PWM ${data.fan.pwm}` : 'PWM --';
+    document.querySelector('#pluto-temp').textContent = formatTelemetryNumber(data.pluto_temp_c, 1, ' °C');
+    connection.innerHTML = `<span class="telemetry-dot me-2"></span>Pluto ${data.pluto_connected ? 'connected' : 'disconnected'}`;
+    connection.className = `small fw-semibold ${data.pluto_connected ? 'text-success' : 'text-secondary'}`;
+  } catch (_error) {
+    connection.innerHTML = '<span class="telemetry-dot me-2"></span>Telemetry unavailable';
+    connection.className = 'small fw-semibold text-danger';
+  }
+}
+
+updateTelemetry();
+window.setInterval(updateTelemetry, 2000);
+
+const streamToggle = document.querySelector('#stream-toggle');
+let streamState = 'stopped';
+
+function renderStreamButton(status) {
+  if (!streamToggle) return;
+  streamState = status.state;
+  const busy = status.state === 'starting' || status.state === 'stopping';
+  streamToggle.disabled = busy;
+  streamToggle.classList.toggle('btn-success', status.state !== 'streaming');
+  streamToggle.classList.toggle('btn-warning', status.state === 'streaming');
+  if (status.state === 'streaming') streamToggle.textContent = '■ Stop stream';
+  else if (status.state === 'starting') streamToggle.textContent = 'Starting…';
+  else if (status.state === 'stopping') streamToggle.textContent = 'Stopping…';
+  else streamToggle.textContent = '▶ Start stream';
+  streamToggle.title = status.output_file ? `Local file: ${status.output_file}` : '';
+}
+
+async function fetchStreamStatus() {
+  if (!streamToggle) return;
+  try {
+    const response = await fetch('/api/stream/status', { cache: 'no-store' });
+    if (response.ok) renderStreamButton(await response.json());
+  } catch (_error) {
+    streamToggle.disabled = true;
+  }
+}
+
+streamToggle?.addEventListener('click', async () => {
+  streamToggle.disabled = true;
+  try {
+    let response;
+    if (streamState === 'streaming') {
+      response = await fetch('/api/stream/stop', { method: 'POST' });
+    } else {
+      const testcardMode = document.querySelector('#source-file')?.checked &&
+        document.querySelector('#file-testcard')?.checked;
+      if (!testcardMode) {
+        window.alert('For this first test, select File and Testcard.');
+        streamToggle.disabled = false;
+        return;
+      }
+      response = await fetch('/api/stream/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          testcard: testcardSelect.value,
+          symbol_rate: symbolRateSelect.value,
+          fec: fecSelect.value,
+        }),
+      });
+    }
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Stream action failed');
+    renderStreamButton(result);
+  } catch (error) {
+    window.alert(error.message);
+    await fetchStreamStatus();
+  }
+});
+
+fetchStreamStatus();
+window.setInterval(fetchStreamStatus, 1000);

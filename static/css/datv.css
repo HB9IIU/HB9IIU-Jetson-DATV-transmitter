@@ -94,3 +94,7 @@
 
 
 
+
+    .telemetry-label { color: #86a2b7; font-size: .82rem; margin-bottom: .3rem; }
+    .telemetry-value { color: #eef7ff; font-size: 1.2rem; font-weight: 750; font-variant-numeric: tabular-nums; }
+    .telemetry-dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; background: currentColor; box-shadow: 0 0 .45rem currentColor; }

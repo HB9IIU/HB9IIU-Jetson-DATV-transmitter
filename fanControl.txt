@@ -1,0 +1,64 @@
+JETSON NANO FAN CONTROL
+=======================
+
+What was changed
+----------------
+The Jetson Nano uses the kernel PWM fan driver and the thermal zone named
+"thermal-fan-est". Automatic temperature control remains enabled.
+
+The normal fan thresholds were lowered by 10 degrees C:
+
+    41 C -> PWM 80  (approximately 1000 RPM)
+    51 C -> PWM 120 (approximately 2000 RPM)
+    61 C -> PWM 160 (approximately 3000 RPM)
+    72 C -> PWM 255 (full speed)
+
+The original thresholds were 51 C, 61 C, 71 C and 82 C.
+Emergency thermal limits were not changed.
+
+Permanent configuration
+-----------------------
+A systemd boot service was installed on the Jetson:
+
+    /etc/systemd/system/jetson-fan-profile.service
+
+It is enabled and applies the four temperatures every time the Jetson boots.
+
+Check the configuration
+-----------------------
+
+    systemctl status jetson-fan-profile.service
+
+    for n in 1 2 3 4; do
+        cat /sys/class/thermal/thermal_zone5/trip_point_${n}_temp
+    done
+
+Values are expressed in thousandths of a degree C. For example, 41000 = 41 C.
+
+Change the temperatures later
+-----------------------------
+Edit the service:
+
+    sudo nano /etc/systemd/system/jetson-fan-profile.service
+
+Change the four numbers in the ExecStart line. Keep the thresholds in increasing
+order. Then apply the change:
+
+    sudo systemctl daemon-reload
+    sudo systemctl restart jetson-fan-profile.service
+
+Restore the original NVIDIA thresholds
+---------------------------------------
+Set the four values in ExecStart back to:
+
+    51000, 61000, 71000, 82000
+
+Then reload and restart the service as shown above.
+
+Disable the custom profile completely
+-------------------------------------
+
+    sudo systemctl disable --now jetson-fan-profile.service
+
+After disabling it, reboot the Jetson to restore the profile supplied by the
+kernel/device tree.

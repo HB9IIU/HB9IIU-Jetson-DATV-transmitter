@@ -43,15 +43,21 @@ MQTT uses the Pluto's default credentials: root/analog.
 """
 
 import os
+import re
 import socket
 import subprocess
 import time
 
+import cairo
 import gi
 import paho.mqtt.client as mqtt
 import paramiko
 import yaml
 
+# Register PyGObject's cairo_t -> pycairo.Context converter before loading
+# GStreamer. Older Jetson/PyGObject releases otherwise deliver cairooverlay's
+# draw context as a generic GBoxed object with no drawing methods.
+gi.require_foreign("cairo")
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402  (must follow gi.require_version)
 
@@ -75,14 +81,46 @@ def log(message=""):
     print("[{:.0f}ms] {}".format((time.monotonic() - START_TIME) * 1000, message),
           flush=True)
 
+
+def draw_marquee(overlay, cr, timestamp, duration, width, height, state):
+    """Draw one frame of a true, continuously looping marquee."""
+    cr.select_font_face(MARQUEE_FONT_FAMILY, 0, 0)  # normal slant/weight
+    cr.set_font_size(MARQUEE_FONT_SIZE)
+
+    if state["first_timestamp"] is None:
+        extents = cr.text_extents(MARQUEE_TEXT)
+        # Support both tuple and attribute-style PyCairo text extents.
+        if hasattr(extents, "x_bearing"):
+            state["x_bearing"] = extents.x_bearing
+            state["y_bearing"] = extents.y_bearing
+            state["text_width"] = extents.width
+        else:
+            state["x_bearing"] = extents[0]
+            state["y_bearing"] = extents[1]
+            state["text_width"] = extents[2]
+        state["first_timestamp"] = timestamp
+        log("Marquee rendered width: {:.0f}px (video width: {}px)".format(
+            state["text_width"], width))
+
+    elapsed_seconds = (timestamp - state["first_timestamp"]) / float(Gst.SECOND)
+    travel_distance = width + state["text_width"]
+    x = width - ((elapsed_seconds * MARQUEE_SPEED_PX_PER_SECOND) % travel_distance)
+    y_top = MARQUEE_STYLES[(width, height)]["y_px"]
+
+    cr.set_source_rgba(*MARQUEE_COLOR_RGBA)
+    # show_text() positions the baseline; compensate for Cairo's bearings so
+    # x is the visible text's left edge and y_top is its top edge.
+    cr.move_to(x - state["x_bearing"], y_top - state["y_bearing"])
+    cr.show_text(MARQUEE_TEXT)
+
 # ---- Settings - edit these directly ----
 
 
 PROFILE = "sr333_fec34"
 PROFILE = "sr250_fec34"
-PROFILE = "sr500_fec34_720p"
+PROFILE = "sr500_fec34"
 
-SOURCE = "testcard"  # "camera" (live cam+mic), "video" (pick+loop a pre-processed video), or "testcard" (pick+loop a static image from testcards/)
+SOURCE = "camera"  # "camera" (live cam+mic), "video" (pick+loop a pre-processed video), or "testcard" (pick+loop a static image from testcards/)
 TX_OUTPUT = "pluto"  # "pluto" (transmit) or "file" (write the muxed TS to TX_OUTPUT_FILE for local inspection, no Pluto/MQTT needed)
 TX_OUTPUT_FILE = "debug_output.ts"
 CAMERA_DEVICE = "/dev/video0"  # overwritten by select_camera_device() when SOURCE == "camera"
@@ -93,7 +131,7 @@ CAMERA_IS_CSI = False  # ditto - selects the nvarguscamerasrc branch instead of 
 # applied on the CSI path - the USB webcam path doesn't use nvvidconv at
 # capture time, and isn't mounted upside down anyway.
 CSI_FLIP_METHOD = 2
-AUDIO_DEVICE = "plughw:2,0"  # Logitech C920 built-in microphone - independent of which camera is used for video
+AUDIO_DEVICE = "plughw:2,0"  # fallback only - overwritten by select_audio_device() in main() when SOURCE == "camera"
 # WebRTC's adaptive AGC (webrtcdsp) on the camera mic input - a real debug_output.ts
 # recording (2026-09-07) came out too quiet to use even with the ALSA capture level
 # already near its max (56/60, 93%, checked via `amixer -c 2`), so the fix has to be
@@ -119,32 +157,23 @@ TITLE_TEXT = "QO-100 DATV — 2020 Jetson Nano 2GB Hardware Encoder"
 TESTCARD_OVERLAY_CONFIG_PATH = os.path.join(SCRIPT_DIR, "testcard_overlays.yaml")
 TESTCARD_TIME_OVERLAY_TICK_SECONDS = 0.05  # how often the readout refreshes
 
-# Scrolling banner: position (both the horizontal start/end of the sweep and
-# the vertical placement) is per-resolution, in plain pixel coordinates, in
-# MARQUEE_STYLES below (a dict separate from OVERLAY_STYLES since this is a
-# distinct, optional, still-experimental feature, not part of the
-# always-on title/bar chrome). Pixel values outside the visible frame
-# (negative, or beyond width/height) are valid and expected - that's how
-# the sweep starts/ends fully off-screen for a real marquee effect.
-#
-# Driven from the main loop's poll (set_property() every MARQUEE_TICK_SECONDS),
-# not GstController: a GstController.InterpolationControlSource was tried
-# (2026-09-07) and looked reasonable in isolated API testing, but broke the
-# banner entirely on real hardware (x-absolute jumped to +-DBL_MAX almost
-# immediately - its running-time reference didn't line up with the
-# assumption a fresh curve starting at t=0 would be evaluated against
-# pipeline-relative time 0). Reverted rather than keep debugging a fragile
-# mechanism - polling has a little visible jitter but reliably works.
-MARQUEE_ENABLED = False
-MARQUEE_TEXT = "The quick brown fox jumps over the lazy dog"
-MARQUEE_FONT_SIZE = 14
-MARQUEE_SCROLL_PERIOD_SECONDS = 60.0  # time for one full sweep, x_start_px -> x_end_px (MARQUEE_STYLES)
-# How often the main loop wakes up to move the banner - has to be much
-# faster than TELEMETRY_UPDATE_SECONDS for the motion to look smooth, so
-# the main loop's poll interval is keyed off this instead when the marquee
-# is enabled (telemetry text/EOF checks stay gated to their own slower
-# intervals, just evaluated more often).
-MARQUEE_TICK_SECONDS = 0.01
+# Scrolling banner: cairooverlay draws the text at an unrestricted pixel x
+# coordinate. The video frame clips it, so even text much wider than the
+# picture enters completely from the right and exits completely to the left.
+# Motion is based on video timestamps and therefore remains smooth without a
+# Python-side polling tick.
+MARQUEE_ENABLED = True
+MARQUEE_TEXT = (
+    "JETSON NANO DATV LIVE TRANSMISSION — This deliberately long demonstration "
+    "message travels completely into and out of the picture, even though its "
+    "rendered width is more than twice the width of a 960 pixel video frame — "
+    "QO-100 DIGITAL AMATEUR TELEVISION FROM HB9IIU — KEEP EXPERIMENTING, KEEP "
+    "LEARNING, AND ENJOY THE SIGNAL!"
+)
+MARQUEE_FONT_FAMILY = "Sans"
+MARQUEE_FONT_SIZE = 24
+MARQUEE_COLOR_RGBA = (1.0, 1.0, 1.0, 1.0)
+MARQUEE_SPEED_PX_PER_SECOND = 100.0
 
 # Title/top-bar/bottom-bar sizing per resolution, not per profile name:
 # several profiles commonly share a resolution (e.g. sr333 and sr500 both
@@ -171,24 +200,11 @@ OVERLAY_STYLES = {
                   "bottom_text_font_size": 10},
 }
 
-# Marquee position per resolution - a separate dict from OVERLAY_STYLES on
-# purpose: it's a distinct, optional, still-experimental feature, not part
-# of the always-on title/bar chrome. Plain pixel coordinates for the
-# resolution in question: 0 = left edge, width = right edge (same for
-# y_px/height) - negative or beyond-width/height values are valid and mean
-# "off-screen", which is how the marquee starts/ends fully hidden. (The
-# underlying GStreamer property only understands a 0-1-of-frame-size
-# fraction - build_pipeline_description() divides these pixel values by
-# width/height to get that fraction, so you never have to think in
-# fractions here.) Defaults below (2x/-2x the frame width, i.e. two full
-# screen-widths off each edge) match the marquee's original behavior before
-# it had per-resolution settings - deliberately generous so the text is
-# fully hidden at both extremes regardless of its actual rendered pixel
-# width (not measured here). Adjust per resolution as needed.
+# Marquee vertical position per resolution, in pixels from the top.
 MARQUEE_STYLES = {
-    (640, 360): {"x_start_px": 1280, "x_end_px": -1280, "y_px": 180},
-    (960, 540): {"x_start_px": 1920, "x_end_px": -1920, "y_px": 270},
-    (1280, 720): {"x_start_px": 2560, "x_end_px": -2560, "y_px": 360},
+    (640, 360): {"y_px": 180},
+    (960, 540): {"y_px": 270},
+    (1280, 720): {"y_px": 360},
 }
 # -----------------------------------------
 
@@ -722,6 +738,55 @@ def select_camera_device():
     return path, is_csi
 
 
+def select_audio_device():
+    """When SOURCE == "camera", pick which ALSA capture device to record
+    from - same reasoning as select_camera_device() above: the Jetson can
+    have more than one microphone attached at once (e.g. a webcam's
+    built-in mic plus a separate USB mic like a Blue Yeti Nano), and which
+    card/device index maps to which physical mic depends on plug order,
+    not something safe to hardcode as AUDIO_DEVICE above. Skips the
+    prompt entirely when only one capture device is present - nothing to
+    choose between. Parses `arecord -l` (ALSA's own device-listing tool)
+    rather than /proc/asound directly - it already resolves card/device
+    indices to human-readable names.
+    """
+    result = subprocess.run(
+        ["arecord", "-l"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        universal_newlines=True)
+    devices = []
+    for line in result.stdout.splitlines():
+        match = re.match(
+            r"card (\d+): \S+ \[(.*?)\], device (\d+): (.*?) \[(.*?)\]", line)
+        if match:
+            card, card_name, device, device_name, _ = match.groups()
+            devices.append((
+                "plughw:{},{}".format(card, device),
+                "{} - {}".format(card_name, device_name)))
+
+    if not devices:
+        raise SystemExit(
+            "No ALSA capture device found (arecord -l) - is a microphone connected?")
+
+    if len(devices) == 1:
+        alsa_id, name = devices[0]
+        print("Using the only microphone found: {} ({})".format(alsa_id, name))
+    else:
+        print("Multiple microphones found:")
+        for i, (alsa_id, name) in enumerate(devices, start=1):
+            print("  {}) {} - {}".format(i, alsa_id, name))
+
+        while True:
+            choice = input("Select a microphone [1-{}]: ".format(len(devices))).strip()
+            if choice.isdigit() and 1 <= int(choice) <= len(devices):
+                alsa_id, name = devices[int(choice) - 1]
+                break
+            print("Invalid choice '{}', try again.".format(choice))
+
+        print("Selected: {} ({})".format(alsa_id, name))
+
+    return alsa_id
+
+
 def build_pipeline_description(ip, profile, source_path=None, overlay_enabled=True):
     width, height = profile["resolution"]
     if (width, height) not in OVERLAY_STYLES:
@@ -788,14 +853,10 @@ def build_pipeline_description(ip, profile, source_path=None, overlay_enabled=Tr
                 bottom_bar_text_ypad, bottom_text_font_size),
         ]
         if MARQUEE_ENABLED:
-            marquee_style = MARQUEE_STYLES[(width, height)]
             parts += [
-                "textoverlay name=marquee_overlay text=\"{}\"".format(MARQUEE_TEXT),
-                "halignment=absolute x-absolute={}".format(
-                    marquee_style["x_start_px"] / width),
-                "valignment=absolute y-absolute={}".format(
-                    marquee_style["y_px"] / height),
-                "shaded-background=false font-desc=\"Sans {}\" !".format(MARQUEE_FONT_SIZE),
+                "videoconvert ! video/x-raw,format=BGRA !",
+                "cairooverlay name=marquee_overlay !",
+                "videoconvert !",
             ]
     else:
         # No compositor/bars/overlays at all - the source's video branch
@@ -891,8 +952,7 @@ def build_pipeline_description(ip, profile, source_path=None, overlay_enabled=Tr
             # Independent of the title/bars/clock/telemetry overlay system -
             # testcard mode never uses that (overlay_enabled is forced False
             # in main()). x-absolute/y-absolute are 0-1-of-frame fractions,
-            # same convention as the marquee above, hence the /width and
-            # /height here. Position/font/color come from
+            # hence the /width and /height here. Position/font/color come from
             # TESTCARD_OVERLAY_CONFIG_PATH (testcard_overlays.yaml), not
             # fixed constants - see load_testcard_overlay_config().
             "textoverlay name=testcard_callsign text=\"{}\" halignment=absolute".format(CALLSIGN),
@@ -920,6 +980,15 @@ def build_pipeline_description(ip, profile, source_path=None, overlay_enabled=Tr
                 elapsed_cfg["x"] / width, elapsed_cfg["y"] / height),
             "shaded-background=false color={} draw-shadow=false draw-outline=false font-desc=\"{} {}\" !".format(
                 elapsed_cfg["color"], elapsed_cfg["font"], elapsed_cfg["size"]),
+        ]
+        if MARQUEE_ENABLED:
+            # Same true marquee as the camera/video overlay chain above.
+            parts += [
+                "videoconvert ! video/x-raw,format=BGRA !",
+                "cairooverlay name=marquee_overlay !",
+                "videoconvert !",
+            ]
+        parts += [
             "{}".format(video_sink),
 
             # name=tone_source so main() can step it through the melody live
@@ -963,14 +1032,14 @@ def main():
     print_banner()
     profile = PROFILES[PROFILE]
     width, height = profile["resolution"]
-    marquee_style = MARQUEE_STYLES[(width, height)] if MARQUEE_ENABLED else None
     log("🎛️  Profile '{}': SR={} FEC={} {}x{} video={}kbps audio={}kbps".format(
         PROFILE, profile["symbol_rate"], profile["fec"], width, height,
         profile["video_bitrate_kbps"], profile["audio_bitrate_kbps"]))
 
     if SOURCE == "camera":
-        global CAMERA_DEVICE, CAMERA_IS_CSI
+        global CAMERA_DEVICE, CAMERA_IS_CSI, AUDIO_DEVICE
         CAMERA_DEVICE, CAMERA_IS_CSI = select_camera_device()
+        AUDIO_DEVICE = select_audio_device()
     if SOURCE == "video":
         source_path = select_video_file(profile)
     elif SOURCE == "testcard":
@@ -1014,6 +1083,10 @@ def main():
         telemetry_overlay = gst_pipeline.get_by_name("telemetry_overlay")
         # Only exists when overlay_enabled and MARQUEE_ENABLED.
         marquee_overlay = gst_pipeline.get_by_name("marquee_overlay")
+        if marquee_overlay is not None:
+            marquee_state = {"first_timestamp": None, "text_width": None}
+            marquee_overlay.connect(
+                "draw", draw_marquee, width, height, marquee_state)
         # Only exists when SOURCE == "video" or "testcard" (see
         # build_pipeline_description). For "testcard" the duration query
         # below never reports a positive duration (a still image/imagefreeze
@@ -1045,20 +1118,16 @@ def main():
         else:
             print()
             log("💾 Writing to '{}'. Press Ctrl+C to stop.".format(TX_OUTPUT_FILE))
-        # The marquee and the testcard tone both need a faster wake-up than
-        # plain telemetry to stay on schedule (smooth motion for the
-        # marquee, on-time steps for the tone) - only pay that extra polling
-        # cost when one of them is actually active.
+        # The testcard tone/time readout need a faster wake-up than plain
+        # telemetry. The marquee is rendered from video timestamps in the
+        # streaming thread and does not depend on this polling interval.
         poll_interval_seconds = TELEMETRY_UPDATE_SECONDS
-        if marquee_overlay is not None:
-            poll_interval_seconds = min(poll_interval_seconds, MARQUEE_TICK_SECONDS)
         if tone_source is not None:
             poll_interval_seconds = min(poll_interval_seconds, TESTCARD_MELODY_TICK_SECONDS)
         if elapsed_overlay is not None:
             poll_interval_seconds = min(poll_interval_seconds, TESTCARD_TIME_OVERLAY_TICK_SECONDS)
         last_telemetry_update = 0.0
         last_elapsed_update = 0.0
-        marquee_start_time = time.monotonic()
         last_tone_change = time.monotonic()
         tone_index = 0
         melody_play_index = 0  # which TESTCARD_MELODY_VOLUMES entry the current play-through uses
@@ -1132,18 +1201,6 @@ def main():
                 freq_to_apply, volume_to_apply, _ = pending_tone_changes.pop(0)
                 tone_source.set_property("freq", freq_to_apply)
                 tone_source.set_property("volume", volume_to_apply)
-            if marquee_overlay is not None:
-                # Sweeps x-absolute from x_start_px to x_end_px (see
-                # MARQUEE_STYLES' comment for what those units mean) and
-                # repeats forever via a plain modulo on wall-clock time.
-                # GStreamer's property is a 0-1-of-width fraction, not
-                # pixels, hence the /width here.
-                sweep_fraction = ((now - marquee_start_time) % MARQUEE_SCROLL_PERIOD_SECONDS
-                                   / MARQUEE_SCROLL_PERIOD_SECONDS)
-                x_start_px = marquee_style["x_start_px"]
-                x_end_px = marquee_style["x_end_px"]
-                x_px = x_start_px + (x_end_px - x_start_px) * sweep_fraction
-                marquee_overlay.set_property("x-absolute", x_px / width)
     except KeyboardInterrupt:
         pass
     finally:
@@ -1172,4 +1229,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
