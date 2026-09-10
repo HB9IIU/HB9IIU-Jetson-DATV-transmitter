@@ -157,7 +157,7 @@ def run_encode_trial(profile, video_bitrate_kbps, clip_path, out_ts_path):
 
     Gst.init(None)
     pipeline_description = tx.build_pipeline_description(
-        None, trial_profile, clip_path, overlay_enabled=False)
+        None, trial_profile, clip_path, top_bar_enabled=False, bottom_bar_enabled=False)
     pipeline = Gst.parse_launch(pipeline_description)
     video_source = pipeline.get_by_name("filesrc")
     bus = pipeline.get_bus()

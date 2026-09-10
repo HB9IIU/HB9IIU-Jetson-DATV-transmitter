@@ -1,0 +1,64 @@
+# Top/bottom banner text + scrolling marquee text/color/geometry, for
+# datv_tx_plus.py's SOURCE == "camera" ONLY - loaded once at import by
+# load_camera_banner_marquee_config(). SOURCE == "video" has its own
+# separate file, video_banner_marquee.yaml, with per-video-file overrides
+# on top of a "default" section (mirroring testcard_overlays.yaml's
+# pattern) - camera has no per-item concept to override, since it's one
+# continuous live feed, not a file picked from a list, so this file stays
+# resolution-only.
+#
+# Whether each of these actually shows is NOT here - that's asked
+# interactively at startup (ask_banner_and_marquee_settings() in
+# datv_tx_plus.py). This file only holds the fixed text/geometry/color/
+# speed that's the same regardless of on/off state.
+#
+# Add an entry for any new resolution a profile uses under EACH of
+# top_banner/bottom_banner/marquee below - build_pipeline_description()
+# raises a clear error instead of a confusing KeyError if one is missing.
+
+top_banner:
+  text: "QO-100 DATV — 2020 Jetson Nano 2GB Hardware Encoder"
+  # 960x540's values were the original, visually-confirmed-on-hardware
+  # ones; 640x360/1280x720 started as a first pass (2026-09-07) scaled
+  # proportionally to width from that baseline (x0.667 / x1.333) - adjust
+  # after looking at a real capture at each resolution.
+  640x360:  {font_size: 10, bar_height: 20, bar_alpha: 0.7}
+  960x540:  {font_size: 10, bar_height: 30, bar_alpha: 0.6}
+  1280x720: {font_size: 10, bar_height: 40, bar_alpha: 0.6}
+
+bottom_banner:
+  # Callsign/clock/telemetry text itself isn't configured here - CALLSIGN
+  # stays a top-level setting in datv_tx_plus.py (used well beyond just
+  # this banner). bar_height = text block height (~ font_size * 1.6px at
+  # 96 DPI) + 2x text_margin - all three overlays (callsign/clock/
+  # telemetry) share one font_size, never varied independently.
+  640x360:  {font_size: 10, bar_height: 20, bar_alpha: 0.6, text_margin: 4}
+  960x540:  {font_size: 10, bar_height: 30, bar_alpha: 0.6, text_margin: 6}
+  1280x720: {font_size: 10, bar_height: 40, bar_alpha: 0.6, text_margin: 8}
+
+marquee:
+  # cairooverlay draws this at an unrestricted pixel x coordinate - the
+  # video frame clips it, so even text much wider than the picture enters
+  # completely from the right and exits completely to the left. Motion is
+  # based on video timestamps, not a Python-side polling tick, so it stays
+  # smooth regardless of text length.
+  text: >-
+    JETSON NANO DATV LIVE TRANSMISSION — This deliberately long demonstration
+    message travels completely into and out of the picture, even though its
+    rendered width is more than twice the width of a 960 pixel video frame —
+    QO-100 DIGITAL AMATEUR TELEVISION FROM HB9IIU — KEEP EXPERIMENTING, KEEP
+    LEARNING, AND ENJOY THE SIGNAL!
+  font_family: "Sans"
+  # [r, g, b, a], each 0.0-1.0 - Cairo's native color format (unlike
+  # testcard_overlays.yaml's 0xAARRGGBB integers: marquee text is drawn via
+  # cairooverlay/Cairo directly, not GStreamer's textoverlay element).
+  color_rgba: [1.0, 1.0, 1.0, 1.0]
+  # Semi-transparent backing band behind the text, full frame width (so it
+  # doesn't jump around with the text's own changing width/position) - set
+  # to null for no background at all, plain text over the picture.
+  bg_rgba: [0.0, 0.0, 0.0, 0.45]
+  # y_px = vertical position from the top of the frame. speed_px_per_second
+  # and font_size/padding all scale with resolution.
+  640x360:  {y_px: 0, font_size: 13, speed_px_per_second: 33.0,  bg_padding_top_px: 4, bg_padding_bottom_px: 3}
+  960x540:  {y_px: 8, font_size: 20, speed_px_per_second: 150.0, bg_padding_top_px: 6, bg_padding_bottom_px: 4}
+  1280x720: {y_px: 4, font_size: 27, speed_px_per_second: 67.0,  bg_padding_top_px: 8, bg_padding_bottom_px: 5}

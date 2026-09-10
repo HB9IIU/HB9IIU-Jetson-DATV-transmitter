@@ -61,7 +61,9 @@ gi.require_foreign("cairo")
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402  (must follow gi.require_version)
 
-from dvbs2_profiles import PROFILES, FRAME, PILOTS, calculate_dvbs2_ts_bitrate
+from dvbs2_profiles import (
+    PROFILES, FRAME, PILOTS, calculate_dvbs2_ts_bitrate,
+    TESTCARD_PROFILE_NAMES, CAMERA_VIDEO_PROFILE_NAMES)
 
 os.environ["TZ"] = "UTC"  # clockoverlay has no UTC option, only local time
 time.tzset()
@@ -84,8 +86,9 @@ def log(message=""):
 
 def draw_marquee(overlay, cr, timestamp, duration, width, height, state):
     """Draw one frame of a true, continuously looping marquee."""
+    style = MARQUEE_STYLES[(width, height)]
     cr.select_font_face(MARQUEE_FONT_FAMILY, 0, 0)  # normal slant/weight
-    cr.set_font_size(MARQUEE_FONT_SIZE)
+    cr.set_font_size(style["font_size"])
 
     if state["first_timestamp"] is None:
         extents = cr.text_extents(MARQUEE_TEXT)
@@ -98,14 +101,36 @@ def draw_marquee(overlay, cr, timestamp, duration, width, height, state):
             state["x_bearing"] = extents[0]
             state["y_bearing"] = extents[1]
             state["text_width"] = extents[2]
+        # font_extents (ascent/descent), not text_extents, for the
+        # background bar's height - a stable line height regardless of
+        # which glyphs MARQUEE_TEXT happens to contain, rather than
+        # jittering with each frame's visible substring.
+        font_extents = cr.font_extents()
+        if hasattr(font_extents, "ascent"):
+            state["font_ascent"] = font_extents.ascent
+            state["font_descent"] = font_extents.descent
+        else:
+            state["font_ascent"] = font_extents[0]
+            state["font_descent"] = font_extents[1]
         state["first_timestamp"] = timestamp
         log("Marquee rendered width: {:.0f}px (video width: {}px)".format(
             state["text_width"], width))
 
     elapsed_seconds = (timestamp - state["first_timestamp"]) / float(Gst.SECOND)
     travel_distance = width + state["text_width"]
-    x = width - ((elapsed_seconds * MARQUEE_SPEED_PX_PER_SECOND) % travel_distance)
-    y_top = MARQUEE_STYLES[(width, height)]["y_px"]
+    x = width - ((elapsed_seconds * style["speed_px_per_second"]) % travel_distance)
+    y_top = style["y_px"]
+
+    if MARQUEE_BG_RGBA is not None:
+        # Full-width band, not just behind the letters - a classic ticker
+        # strip the text scrolls through, so the backdrop doesn't jump
+        # around with the text's own changing width/position.
+        bar_top = y_top - style["bg_padding_top_px"]
+        bar_height = (state["font_ascent"] + state["font_descent"]
+                      + style["bg_padding_top_px"] + style["bg_padding_bottom_px"])
+        cr.set_source_rgba(*MARQUEE_BG_RGBA)
+        cr.rectangle(0, bar_top, width, bar_height)
+        cr.fill()
 
     cr.set_source_rgba(*MARQUEE_COLOR_RGBA)
     # show_text() positions the baseline; compensate for Cairo's bearings so
@@ -116,11 +141,35 @@ def draw_marquee(overlay, cr, timestamp, duration, width, height, state):
 # ---- Settings - edit these directly ----
 
 
-PROFILE = "sr333_fec34"
-PROFILE = "sr250_fec34"
-PROFILE = "sr500_fec34"
+# Pick a symbol rate + FEC - the actual profile name (and therefore
+# resolution/bitrate) is resolved automatically below from these two plus
+# SOURCE, via TESTCARD_PROFILE_NAMES / CAMERA_VIDEO_PROFILE_NAMES. No
+# profile-name string to type or memorize here anymore, and no risk of the
+# old "multiple uncommented PROFILE = lines, last one silently wins"
+# confusion, since there's only one assignment each for SR/FEC/SOURCE.
+SR = 500       # symbol rate in kS/s: 250, 333, or 500
+FEC = "2/3"    # DVB-S2 FEC: "2/3" or "3/4"
 
-SOURCE = "camera"  # "camera" (live cam+mic), "video" (pick+loop a pre-processed video), or "testcard" (pick+loop a static image from testcards/)
+SOURCE = "video"  # "camera" (live cam+mic), "video" (pick+loop a pre-processed video), or "testcard" (pick+loop a static image from testcards/)
+
+# (SR, FEC) -> name of the entry to use in PROFILES, one table per SOURCE
+# family - see dvbs2_profiles.py's TESTCARD_PROFILE_NAMES/
+# CAMERA_VIDEO_PROFILE_NAMES for the reasoning (shared with datv_engine.py,
+# which needs the exact same lookup for the web UI's SR/FEC selectors -
+# kept in one place so the two can't silently drift apart again).
+_PROFILE_NAMES_BY_SOURCE = {
+    "testcard": TESTCARD_PROFILE_NAMES,
+    "camera": CAMERA_VIDEO_PROFILE_NAMES,
+    "video": CAMERA_VIDEO_PROFILE_NAMES,
+}
+try:
+    PROFILE = _PROFILE_NAMES_BY_SOURCE[SOURCE][(SR, FEC)]
+except KeyError:
+    raise SystemExit(
+        "No profile for SR={} FEC={} SOURCE={} - check SR/FEC/SOURCE above "
+        "match a real entry in TESTCARD_PROFILE_NAMES/"
+        "CAMERA_VIDEO_PROFILE_NAMES.".format(SR, FEC, SOURCE))
+
 TX_OUTPUT = "pluto"  # "pluto" (transmit) or "file" (write the muxed TS to TX_OUTPUT_FILE for local inspection, no Pluto/MQTT needed)
 TX_OUTPUT_FILE = "debug_output.ts"
 CAMERA_DEVICE = "/dev/video0"  # overwritten by select_camera_device() when SOURCE == "camera"
@@ -140,12 +189,20 @@ AUDIO_DEVICE = "plughw:2,0"  # fallback only - overwritten by select_audio_devic
 MIC_AGC = True
 CALLSIGN = "HB9IIU"
 FREQUENCY_HZ = 2405000000
-GAIN_DB = -24 # 0 was confirmed to produce zero RF output in a raw hardware test; -10 produced a visible signal
-TITLE_TEXT = "QO-100 DATV — 2020 Jetson Nano 2GB Hardware Encoder"
+# Writes directly to the Pluto's AD9361 out_voltage0_hardwaregain
+# attenuation register via MQTT tx/gain. Real confirmed range (Pluto
+# firmware source pluto-ori/mqtthandlecommand.cpp, and DATV-Red's own
+# working gain slider: min:-89 max:0 step:-0.25) is -89 dB (near-off) to
+# 0 dB (MAXIMUM power), 0.25 dB steps - NOT "0 = zero RF output" as this
+# comment previously claimed (2026-09-07 raw hardware test result that
+# contradicts both independent sources above and should be re-verified on
+# real hardware rather than trusted either way).
+GAIN_DB = -24
 
 # When SOURCE == "testcard": testcard mode never uses the title/bars/clock/
-# telemetry overlay system above (see main() - overlay_enabled is forced
-# False, no prompt) - a still test-card image is its own "chrome" and
+# telemetry overlay system above (see main() - top_bar_enabled/
+# bottom_bar_enabled are forced False, no prompt) - a still test-card
+# image is its own "chrome" and
 # doesn't need it. The four things still burned in - callsign, freq
 # banner, volume banner, elapsed-time readout - have their
 # position/font/color loaded from TESTCARD_OVERLAY_CONFIG_PATH (see
@@ -162,50 +219,147 @@ TESTCARD_TIME_OVERLAY_TICK_SECONDS = 0.05  # how often the readout refreshes
 # picture enters completely from the right and exits completely to the left.
 # Motion is based on video timestamps and therefore remains smooth without a
 # Python-side polling tick.
+# Startup default only - for SOURCE in ("camera", "video") this is
+# overwritten by ask_banner_and_marquee_settings()'s prompt in main()
+# before build_pipeline_description() ever reads it. Only matters as-is
+# for TESTCARD tuning trials, which never build a marquee regardless (see
+# build_pipeline_description()'s testcard branch).
 MARQUEE_ENABLED = True
-MARQUEE_TEXT = (
-    "JETSON NANO DATV LIVE TRANSMISSION — This deliberately long demonstration "
-    "message travels completely into and out of the picture, even though its "
-    "rendered width is more than twice the width of a 960 pixel video frame — "
-    "QO-100 DIGITAL AMATEUR TELEVISION FROM HB9IIU — KEEP EXPERIMENTING, KEEP "
-    "LEARNING, AND ENJOY THE SIGNAL!"
-)
-MARQUEE_FONT_FAMILY = "Sans"
-MARQUEE_FONT_SIZE = 24
-MARQUEE_COLOR_RGBA = (1.0, 1.0, 1.0, 1.0)
-MARQUEE_SPEED_PX_PER_SECOND = 100.0
 
-# Title/top-bar/bottom-bar sizing per resolution, not per profile name:
-# several profiles commonly share a resolution (e.g. sr333 and sr500 both
-# use 960x540) and should look identical. Add an entry here for any new
-# resolution a profile uses - build_pipeline_description() raises a clear
-# error instead of a confusing KeyError if one is missing.
-# bottom_bar_height = text block height (~ bottom_text_font_size * 1.6 px at
-# 96 DPI) + 2x bottom_bar_text_margin. bottom_text_font_size is shared by
-# all three bottom-bar overlays (callsign/clock/telemetry) - they've always
-# used one common size, never varied independently.
-# 960x540's values were the original, visually-confirmed-on-hardware ones;
-# 640x360/1280x720 started as a first pass (2026-09-07) scaled
-# proportionally to width from that baseline (x0.667 / x1.333) - adjust
-# after looking at a real capture at each resolution.
-OVERLAY_STYLES = {
-    (640, 360): {"title_font_size": 10, "top_bar_height": 20, "top_bar_alpha": 0.7,
-                 "bottom_bar_height": 20, "bottom_bar_alpha": 0.6, "bottom_bar_text_margin": 4,
-                 "bottom_text_font_size": 10},
-    (960, 540): {"title_font_size": 10, "top_bar_height": 30, "top_bar_alpha": 0.6,
-                 "bottom_bar_height": 30, "bottom_bar_alpha": 0.6, "bottom_bar_text_margin": 6,
-                 "bottom_text_font_size": 10},
-    (1280, 720): {"title_font_size": 10, "top_bar_height": 40, "top_bar_alpha": 0.6,
-                  "bottom_bar_height": 40, "bottom_bar_alpha": 0.6, "bottom_bar_text_margin": 8,
-                  "bottom_text_font_size": 10},
-}
+CAMERA_BANNER_MARQUEE_CONFIG_PATH = os.path.join(SCRIPT_DIR, "camera_banner_marquee.yaml")
+VIDEO_BANNER_MARQUEE_CONFIG_PATH = os.path.join(SCRIPT_DIR, "video_banner_marquee.yaml")
 
-# Marquee vertical position per resolution, in pixels from the top.
-MARQUEE_STYLES = {
-    (640, 360): {"y_px": 180},
-    (960, 540): {"y_px": 270},
-    (1280, 720): {"y_px": 360},
-}
+
+def _parse_resolution_key(key):
+    width_str, height_str = key.split("x")
+    return int(width_str), int(height_str)
+
+
+def _resolve_banner_marquee_config(config):
+    """Turn a raw {top_banner, bottom_banner, marquee} dict - either
+    camera_banner_marquee.yaml loaded directly, or video_banner_marquee.yaml
+    after merging a video's override onto its "default" (see
+    _deep_merge_banner_marquee()) - into the flat, (width, height)-keyed
+    structures build_pipeline_description()/draw_marquee() actually read
+    (OVERLAY_STYLES/MARQUEE_STYLES shape, plus the flat TITLE_TEXT/
+    MARQUEE_* scalars).
+    """
+    top_banner_cfg = config["top_banner"]
+    bottom_banner_cfg = config["bottom_banner"]
+    marquee_cfg = config["marquee"]
+
+    overlay_styles = {}
+    for key, top_res_cfg in top_banner_cfg.items():
+        if key == "text":
+            continue
+        resolution = _parse_resolution_key(key)
+        bottom_res_cfg = bottom_banner_cfg[key]
+        overlay_styles[resolution] = {
+            "title_font_size": top_res_cfg["font_size"],
+            "top_bar_height": top_res_cfg["bar_height"],
+            "top_bar_alpha": top_res_cfg["bar_alpha"],
+            "bottom_bar_height": bottom_res_cfg["bar_height"],
+            "bottom_bar_alpha": bottom_res_cfg["bar_alpha"],
+            "bottom_bar_text_margin": bottom_res_cfg["text_margin"],
+            "bottom_text_font_size": bottom_res_cfg["font_size"],
+        }
+
+    marquee_styles = {}
+    for key, res_cfg in marquee_cfg.items():
+        if key in ("text", "font_family", "color_rgba", "bg_rgba"):
+            continue
+        resolution = _parse_resolution_key(key)
+        marquee_styles[resolution] = {
+            "y_px": res_cfg["y_px"],
+            "font_size": res_cfg["font_size"],
+            "speed_px_per_second": res_cfg["speed_px_per_second"],
+            "bg_padding_top_px": res_cfg["bg_padding_top_px"],
+            "bg_padding_bottom_px": res_cfg["bg_padding_bottom_px"],
+        }
+
+    bg_rgba = marquee_cfg.get("bg_rgba")
+    return {
+        "title_text": top_banner_cfg["text"],
+        "overlay_styles": overlay_styles,
+        "marquee_text": marquee_cfg["text"],
+        "marquee_font_family": marquee_cfg["font_family"],
+        "marquee_color_rgba": tuple(marquee_cfg["color_rgba"]),
+        "marquee_bg_rgba": tuple(bg_rgba) if bg_rgba is not None else None,
+        "marquee_styles": marquee_styles,
+    }
+
+
+def load_camera_banner_marquee_config():
+    """TITLE_TEXT/OVERLAY_STYLES/MARQUEE_TEXT/MARQUEE_FONT_FAMILY/
+    MARQUEE_COLOR_RGBA/MARQUEE_BG_RGBA/MARQUEE_STYLES for SOURCE ==
+    "camera" - everything about the top/bottom banner and scrolling
+    marquee EXCEPT whether each is actually on (that's MARQUEE_ENABLED /
+    top_bar_enabled/bottom_bar_enabled, asked interactively - see
+    ask_banner_and_marquee_settings() and main()). Loaded once here, at
+    import time, from CAMERA_BANNER_MARQUEE_CONFIG_PATH
+    (camera_banner_marquee.yaml - see that file's own comments) instead of
+    being hardcoded in this file, same reasoning as
+    TESTCARD_OVERLAY_CONFIG_PATH: geometry/text/color is easier to tune by
+    editing one external file than by editing Python, and doesn't need a
+    code change to adjust. SOURCE == "video" has its own separate loader,
+    load_video_banner_marquee_config() below - camera has no per-item
+    (per-file) concept to key off, unlike video/testcard.
+    """
+    with open(CAMERA_BANNER_MARQUEE_CONFIG_PATH) as f:
+        config = yaml.safe_load(f)
+    return _resolve_banner_marquee_config(config)
+
+
+def _deep_merge_banner_marquee(default_cfg, override_cfg):
+    """Field-by-field fallback to default_cfg for anything not present in
+    override_cfg - same merge semantics as load_testcard_overlay_config(),
+    just one level deeper: top_banner/bottom_banner/marquee's own
+    resolution blocks (and text/font_family/color_rgba/bg_rgba scalars)
+    each fall back individually, not as an all-or-nothing block.
+    """
+    merged = {}
+    for section_name, default_section in default_cfg.items():
+        override_section = override_cfg.get(section_name, {})
+        merged_section = dict(default_section)
+        for key, value in override_section.items():
+            if isinstance(value, dict) and isinstance(merged_section.get(key), dict):
+                merged_section[key] = dict(merged_section[key], **value)
+            else:
+                merged_section[key] = value
+        merged[section_name] = merged_section
+    return merged
+
+
+def load_video_banner_marquee_config(source_path):
+    """Same idea as load_camera_banner_marquee_config(), but for SOURCE ==
+    "video": looked up fresh here (not cached at import time, since the
+    active video isn't known until select_video_file() runs in main())
+    from VIDEO_BANNER_MARQUEE_CONFIG_PATH (video_banner_marquee.yaml),
+    keyed by the video's filename without extension - falls back to that
+    file's "default" section field-by-field for anything not overridden,
+    exactly like load_testcard_overlay_config(). Returns all resolutions
+    at once (same shape as load_camera_banner_marquee_config()) since
+    OVERLAY_STYLES/MARQUEE_STYLES are indexed by (width, height) downstream
+    - build_pipeline_description() picks out the one it needs.
+    """
+    with open(VIDEO_BANNER_MARQUEE_CONFIG_PATH) as f:
+        all_config = yaml.safe_load(f)
+
+    video_name = os.path.splitext(os.path.basename(source_path))[0]
+    override = all_config.get(video_name) or {}
+    merged = _deep_merge_banner_marquee(all_config["default"], override)
+    return _resolve_banner_marquee_config(merged)
+
+
+_camera_banner_marquee_config = load_camera_banner_marquee_config()
+TITLE_TEXT = _camera_banner_marquee_config["title_text"]
+OVERLAY_STYLES = _camera_banner_marquee_config["overlay_styles"]
+MARQUEE_TEXT = _camera_banner_marquee_config["marquee_text"]
+MARQUEE_FONT_FAMILY = _camera_banner_marquee_config["marquee_font_family"]
+MARQUEE_COLOR_RGBA = _camera_banner_marquee_config["marquee_color_rgba"]
+MARQUEE_BG_RGBA = _camera_banner_marquee_config["marquee_bg_rgba"]
+MARQUEE_STYLES = _camera_banner_marquee_config["marquee_styles"]
+
 # -----------------------------------------
 
 MQTT_PORT = 1883
@@ -501,6 +655,26 @@ def set_ptt(mqtt_client, callsign, on):
     log("🔊 PTT ON" if on else "🔇 PTT OFF")
 
 
+def format_gain_db(gain_db):
+    """tx/gain MQTT payload, snapped to the AD9361's real 0.25 dB step and
+    formatted as a plain integer when possible (e.g. "-24", not "-24.0").
+
+    Untested hypothesis (2026-09-10): the web UI's gain slider made GAIN_DB
+    a float instead of the previous hardcoded int, and the very next
+    web-UI stream attempt got zero Pluto SR acknowledgements (gain is sent
+    before sr in configure_pluto() - a stall processing tx/gain would
+    explain that). Sending a noisy "-24.0" instead of a clean "-24" is a
+    plausible culprit if Pluto's controller parses this command strictly,
+    so this formatting removes that variable - never confirmed against
+    actual firmware source, re-verify on real hardware if SR acks still
+    fail with a fractional gain value.
+    """
+    rounded = round(gain_db * 4) / 4.0
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return "{:.2f}".format(rounded).rstrip("0").rstrip(".")
+
+
 def configure_pluto(mqtt_client, ip, callsign, profile):
     # Without this, the Pluto's modulator can sit in whatever tx/stream/mode
     # it defaults to (e.g. "test" - a bare, unmodulated carrier) regardless
@@ -510,7 +684,7 @@ def configure_pluto(mqtt_client, ip, callsign, profile):
     publish(mqtt_client, callsign, "tx/stream/mode", "dvbs2-ts")
     time.sleep(MODE_SWITCH_SETTLE_SECONDS)
     publish(mqtt_client, callsign, "tx/frequency", FREQUENCY_HZ)
-    publish(mqtt_client, callsign, "tx/gain", GAIN_DB)
+    publish(mqtt_client, callsign, "tx/gain", format_gain_db(GAIN_DB))
     publish(mqtt_client, callsign, "tx/dvbs2/sr", profile["symbol_rate"])
     publish(mqtt_client, callsign, "tx/dvbs2/fecmode", "fixed")
     publish(mqtt_client, callsign, "tx/dvbs2/fec", profile["fec"])
@@ -667,19 +841,31 @@ def select_testcard_file():
     return testcard_path
 
 
-def ask_overlay_enabled():
-    """When SOURCE == "video", let the user opt out of the title/callsign/
-    clock/telemetry overlay (e.g. for a clean recording or a quick look at
-    the raw pre-processed file) instead of always burning it in. Not asked
-    for "testcard" - see TESTCARD_OVERLAY_CONFIG_PATH and main().
-    """
+def ask_yes_no(prompt, default=True):
+    hint = "[Y/n]" if default else "[y/N]"
     while True:
-        choice = input("Enable title/callsign/clock/telemetry overlay? [Y/n]: ").strip().lower()
-        if choice in ("", "y", "yes"):
+        choice = input("{} {}: ".format(prompt, hint)).strip().lower()
+        if choice == "":
+            return default
+        if choice in ("y", "yes"):
             return True
         if choice in ("n", "no"):
             return False
         print("Invalid choice '{}', try again.".format(choice))
+
+
+def ask_banner_and_marquee_settings():
+    """When SOURCE in ("camera", "video"): let the user independently choose
+    the top title banner, the bottom callsign/clock/telemetry banner, and
+    the scrolling marquee, instead of one combined on/off switch (e.g. for
+    a clean recording, or to burn in only the bottom telemetry without the
+    marquee). Not asked for "testcard" - it never uses any of this, see
+    TESTCARD_OVERLAY_CONFIG_PATH and main().
+    """
+    top_bar_enabled = ask_yes_no("Enable top title banner?")
+    bottom_bar_enabled = ask_yes_no("Enable bottom callsign/clock/telemetry banner?")
+    marquee_enabled = ask_yes_no("Enable scrolling marquee?")
+    return top_bar_enabled, bottom_bar_enabled, marquee_enabled
 
 
 def select_camera_device():
@@ -787,14 +973,45 @@ def select_audio_device():
     return alsa_id
 
 
-def build_pipeline_description(ip, profile, source_path=None, overlay_enabled=True):
+def build_pipeline_description(ip, profile, source_path=None,
+                                top_bar_enabled=True, bottom_bar_enabled=True):
+    # Compositor/bars branch is needed if either bar OR the marquee wants to
+    # show - the marquee's cairooverlay is chained onto this same branch's
+    # output (see below), so without this it silently never appears when
+    # both banners are off, regardless of MARQUEE_ENABLED (a real bug hit
+    # 2026-09-10). A bar that's off still goes through the branch (alpha=0,
+    # its textoverlay entries just skipped), see the comment above
+    # OVERLAY_STYLES for why that's pad-renumbering-safe. Testcard is
+    # excluded even though MARQUEE_ENABLED may still be True there (main()
+    # never touches it for testcard) - testcard has its own separate
+    # overlay system and must never enter this branch, see its SOURCE
+    # branch below.
+    overlay_enabled = (top_bar_enabled or bottom_bar_enabled
+                        or (SOURCE != "testcard" and MARQUEE_ENABLED))
     width, height = profile["resolution"]
+    if SOURCE == "video":
+        # Overwrite the same globals load_camera_banner_marquee_config()
+        # populated at import time - safe because SOURCE is fixed for the
+        # whole process lifetime (a hand-edited setting, never changes
+        # mid-run - see datv_tx_plus.py's "Settings" section), so nothing
+        # downstream (draw_marquee() included) needs to know which file the
+        # values actually came from.
+        global TITLE_TEXT, OVERLAY_STYLES, MARQUEE_TEXT, MARQUEE_FONT_FAMILY
+        global MARQUEE_COLOR_RGBA, MARQUEE_BG_RGBA, MARQUEE_STYLES
+        video_banner_marquee = load_video_banner_marquee_config(source_path)
+        TITLE_TEXT = video_banner_marquee["title_text"]
+        OVERLAY_STYLES = video_banner_marquee["overlay_styles"]
+        MARQUEE_TEXT = video_banner_marquee["marquee_text"]
+        MARQUEE_FONT_FAMILY = video_banner_marquee["marquee_font_family"]
+        MARQUEE_COLOR_RGBA = video_banner_marquee["marquee_color_rgba"]
+        MARQUEE_BG_RGBA = video_banner_marquee["marquee_bg_rgba"]
+        MARQUEE_STYLES = video_banner_marquee["marquee_styles"]
     if (width, height) not in OVERLAY_STYLES:
         raise SystemExit(
             "No OVERLAY_STYLES entry for {}x{} - add one (see the comment "
             "above OVERLAY_STYLES).".format(width, height))
     overlay_style = OVERLAY_STYLES[(width, height)]
-    if MARQUEE_ENABLED and (width, height) not in MARQUEE_STYLES:
+    if SOURCE != "testcard" and MARQUEE_ENABLED and (width, height) not in MARQUEE_STYLES:
         raise SystemExit(
             "No MARQUEE_STYLES entry for {}x{} - add one (see the comment "
             "above MARQUEE_STYLES).".format(width, height))
@@ -824,34 +1041,45 @@ def build_pipeline_description(ip, profile, source_path=None, overlay_enabled=Tr
     ]
 
     if overlay_enabled:
+        top_bar_visible = top_bar_enabled
+        bottom_bar_visible = bottom_bar_enabled
         # Named junction point the source (+ the two bar videotestsrcs
         # below) link into. Source chain must link to comp. FIRST, before
         # the bar sources - compositor names request pads sink_0/1/2 in
         # link order, and the sink_0/1/2 properties below assume
-        # sink_0=source, sink_1=top bar, sink_2=bottom bar.
+        # sink_0=source, sink_1=top bar, sink_2=bottom bar. Pad layout
+        # stays fixed regardless of visibility - a hidden bar is alpha=0,
+        # not a removed pad, so nothing here needs renumbering.
         video_sink = "comp."
         parts += [
             "compositor name=comp",
             "sink_0::xpos=0 sink_0::ypos=0",
             "sink_1::xpos=0 sink_1::ypos=0 sink_1::alpha={}".format(
-                overlay_style["top_bar_alpha"]),
+                overlay_style["top_bar_alpha"] if top_bar_visible else 0.0),
             "sink_2::xpos=0 sink_2::ypos={} sink_2::alpha={}".format(
-                height - overlay_style["bottom_bar_height"], overlay_style["bottom_bar_alpha"]),
+                height - overlay_style["bottom_bar_height"],
+                overlay_style["bottom_bar_alpha"] if bottom_bar_visible else 0.0),
             "!",
             "videoconvert !",
-            "textoverlay text=\"{}\" halignment=center".format(TITLE_TEXT),
-            "valignment=top ypad=0 shaded-background=false font-desc=\"Sans {}\" !".format(
-                overlay_style["title_font_size"]),
-            "textoverlay text=\"{}\" halignment=left xpad=10".format(CALLSIGN),
-            "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
-                bottom_bar_text_ypad, bottom_text_font_size),
-            "clockoverlay time-format=\"%H:%M:%S UTC\" halignment=right xpad=10",
-            "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
-                bottom_bar_text_ypad, bottom_text_font_size),
-            "textoverlay name=telemetry_overlay text=\"\" halignment=center",
-            "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
-                bottom_bar_text_ypad, bottom_text_font_size),
         ]
+        if top_bar_visible:
+            parts += [
+                "textoverlay text=\"{}\" halignment=center".format(TITLE_TEXT),
+                "valignment=top ypad=0 shaded-background=false font-desc=\"Sans {}\" !".format(
+                    overlay_style["title_font_size"]),
+            ]
+        if bottom_bar_visible:
+            parts += [
+                "textoverlay text=\"{}\" halignment=left xpad=10".format(CALLSIGN),
+                "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+                    bottom_bar_text_ypad, bottom_text_font_size),
+                "clockoverlay time-format=\"%H:%M:%S UTC\" halignment=right xpad=10",
+                "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+                    bottom_bar_text_ypad, bottom_text_font_size),
+                "textoverlay name=telemetry_overlay text=\"\" halignment=center",
+                "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
+                    bottom_bar_text_ypad, bottom_text_font_size),
+            ]
         if MARQUEE_ENABLED:
             parts += [
                 "videoconvert ! video/x-raw,format=BGRA !",
@@ -950,8 +1178,9 @@ def build_pipeline_description(ip, profile, source_path=None, overlay_enabled=Tr
             "videoscale ! video/x-raw,width={},height={} !".format(width, height),
             "videoconvert !",
             # Independent of the title/bars/clock/telemetry overlay system -
-            # testcard mode never uses that (overlay_enabled is forced False
-            # in main()). x-absolute/y-absolute are 0-1-of-frame fractions,
+            # testcard mode never uses that (top_bar_enabled/
+            # bottom_bar_enabled are forced False in main()).
+            # x-absolute/y-absolute are 0-1-of-frame fractions,
             # hence the /width and /height here. Position/font/color come from
             # TESTCARD_OVERLAY_CONFIG_PATH (testcard_overlays.yaml), not
             # fixed constants - see load_testcard_overlay_config().
@@ -981,14 +1210,9 @@ def build_pipeline_description(ip, profile, source_path=None, overlay_enabled=Tr
             "shaded-background=false color={} draw-shadow=false draw-outline=false font-desc=\"{} {}\" !".format(
                 elapsed_cfg["color"], elapsed_cfg["font"], elapsed_cfg["size"]),
         ]
-        if MARQUEE_ENABLED:
-            # Same true marquee as the camera/video overlay chain above.
-            parts += [
-                "videoconvert ! video/x-raw,format=BGRA !",
-                "cairooverlay name=marquee_overlay !",
-                "videoconvert !",
-            ]
         parts += [
+            # testcard mode never shows the scrolling marquee - it's a
+            # camera/video-only feature (see MARQUEE_ENABLED above).
             "{}".format(video_sink),
 
             # name=tone_source so main() can step it through the melody live
@@ -1046,12 +1270,15 @@ def main():
         source_path = select_testcard_file()
     else:
         source_path = None
-    if SOURCE == "video":
-        overlay_enabled = ask_overlay_enabled()
-    elif SOURCE == "testcard":
-        overlay_enabled = False  # testcard never uses this overlay system - see TESTCARD_OVERLAY_CONFIG_PATH above
+    global MARQUEE_ENABLED
+    if SOURCE in ("camera", "video"):
+        top_bar_enabled, bottom_bar_enabled, MARQUEE_ENABLED = ask_banner_and_marquee_settings()
     else:
-        overlay_enabled = True
+        # testcard never uses any of this - see TESTCARD_OVERLAY_CONFIG_PATH
+        # above (top/bottom banner) and build_pipeline_description() (never
+        # adds a marquee for testcard regardless of MARQUEE_ENABLED).
+        top_bar_enabled = False
+        bottom_bar_enabled = False
 
     Gst.init(None)
 
@@ -1076,12 +1303,12 @@ def main():
             cbr_relay = start_cbr_relay(pluto_ip, ts_bitrate)
 
         pipeline_description = build_pipeline_description(
-            pluto_ip, profile, source_path, overlay_enabled)
+            pluto_ip, profile, source_path, top_bar_enabled, bottom_bar_enabled)
         log("🎬 Starting video stream...")
         gst_pipeline = Gst.parse_launch(pipeline_description)
-        # Only exists when overlay_enabled (see build_pipeline_description).
+        # Only exists when bottom_bar_enabled (see build_pipeline_description).
         telemetry_overlay = gst_pipeline.get_by_name("telemetry_overlay")
-        # Only exists when overlay_enabled and MARQUEE_ENABLED.
+        # Only exists when (top_bar_enabled or bottom_bar_enabled) and MARQUEE_ENABLED.
         marquee_overlay = gst_pipeline.get_by_name("marquee_overlay")
         if marquee_overlay is not None:
             marquee_state = {"first_timestamp": None, "text_width": None}

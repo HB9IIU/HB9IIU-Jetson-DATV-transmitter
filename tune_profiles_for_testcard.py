@@ -7,11 +7,13 @@ match its bitrate= target, and the overshoot isn't a fixed ratio).
 Why this is a separate script instead of another TEST_CLIPS entry in
 tune_profiles.py: testcard mode has no clip file to encode. It's a live
 pipeline - a still image plus four text overlays (callsign/freq/volume/
-elapsed-time, see load_testcard_overlay_config()) and, since 2026-09-09,
-the scrolling marquee, all driven by main()'s polling loop rather than by
-decoding frames from disk. A trial here has to reproduce that live driving
-loop for a fixed wall-clock duration instead of just playing a file to its
-natural end.
+elapsed-time, see load_testcard_overlay_config()), driven by main()'s
+polling loop rather than by decoding frames from disk. Testcard mode never
+shows the scrolling marquee (that's camera/video-only - see
+build_pipeline_description()), so there's no marquee state to reproduce
+here either. A trial here has to reproduce that live driving loop for a
+fixed wall-clock duration instead of just playing a file to its natural
+end.
 
 Why no PSNR comparison (unlike tune_profiles.py): PSNR there works because
 a movie/camera clip is the same deterministic sequence of frames on every
@@ -67,11 +69,13 @@ WORK_DIR = os.path.join(SCRIPT_DIR, "tuning")
 FFPROBE = os.path.join(SCRIPT_DIR, "ffmpeg-static", "ffprobe")
 
 # Which profile(s) to tune - edit this directly, then just hit Run. Starts
-# with the two profiles the testcard-at-720p hypothesis (see
-# dvbs2_profiles.py) is actually about - real motion content measured
-# better at 960x540, but testcard's near-zero motion may not have the same
-# bitrate-vs-resolution tradeoff. Empty list = every profile in PROFILES.
-PROFILES_TO_TUNE = ["sr500_fec34_720p", "sr500_fec23_720p"]
+# with the profiles the testcard-at-720p hypothesis (see dvbs2_profiles.py)
+# is actually about - real motion content measured better at 960x540, but
+# testcard's near-zero motion may not have the same bitrate-vs-resolution
+# tradeoff. All four below (sr500 and sr333 720p pairs) were confirmed safe
+# at their configured bitrates by a 2026-09-10 hardware run. Empty list =
+# every profile in PROFILES.
+PROFILES_TO_TUNE = ["sr250_fec34_720p", "sr250_fec23_720p"]
 
 # How long each trial plays the live testcard pipeline before stopping and
 # measuring - matches the ~90s clip length tune_profiles.py's movie/camera
@@ -127,11 +131,10 @@ def run_testcard_trial(profile, video_bitrate_kbps, testcard_path, out_ts_path):
 
     Gst.init(None)
     pipeline_description = tx.build_pipeline_description(
-        None, trial_profile, testcard_path, overlay_enabled=False)
+        None, trial_profile, testcard_path, top_bar_enabled=False, bottom_bar_enabled=False)
     pipeline = Gst.parse_launch(pipeline_description)
     bus = pipeline.get_bus()
 
-    marquee_overlay = pipeline.get_by_name("marquee_overlay")
     tone_source = pipeline.get_by_name("tone_source")
     freq_banner_overlay = pipeline.get_by_name("testcard_freq_banner")
     volume_banner_overlay = pipeline.get_by_name("testcard_volume_banner")
@@ -146,11 +149,9 @@ def run_testcard_trial(profile, video_bitrate_kbps, testcard_path, out_ts_path):
             "text", tx.format_volume_banner(tx.TESTCARD_MELODY_VOLUMES[0], start_is_rest))
 
     poll_interval_seconds = min(
-        tx.MARQUEE_TICK_SECONDS, tx.TESTCARD_MELODY_TICK_SECONDS,
-        tx.TESTCARD_TIME_OVERLAY_TICK_SECONDS)
+        tx.TESTCARD_MELODY_TICK_SECONDS, tx.TESTCARD_TIME_OVERLAY_TICK_SECONDS)
 
     trial_start = time.monotonic()
-    marquee_start_time = trial_start
     last_elapsed_update = 0.0
     last_tone_change = trial_start
     tone_index = 0
@@ -197,11 +198,6 @@ def run_testcard_trial(profile, video_bitrate_kbps, testcard_path, out_ts_path):
                 freq_to_apply, volume_to_apply, _ = pending_tone_changes.pop(0)
                 tone_source.set_property("freq", freq_to_apply)
                 tone_source.set_property("volume", volume_to_apply)
-
-            if marquee_overlay is not None:
-                sweep_fraction = ((now - marquee_start_time) % tx.MARQUEE_SCROLL_PERIOD_SECONDS
-                                   / tx.MARQUEE_SCROLL_PERIOD_SECONDS)
-                marquee_overlay.set_property("x-absolute", sweep_fraction)
     finally:
         pipeline.set_state(Gst.State.NULL)
 

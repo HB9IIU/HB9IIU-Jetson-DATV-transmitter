@@ -8,10 +8,12 @@ const cameraSelect = document.querySelector('#video-source');
 const preview = document.querySelector('#camera-preview');
 const previewImage = document.querySelector('#camera-preview-image');
 const previewMessage = document.querySelector('#preview-message');
-const fileTypeOptions = document.querySelectorAll('input[name="file-type"]');
 const testcardOptions = document.querySelector('#testcard-options');
 const videoOptions = document.querySelector('#video-options');
 const testcardSelect = document.querySelector('#testcard-source');
+const testcardPrevButton = document.querySelector('#testcard-prev');
+const testcardNextButton = document.querySelector('#testcard-next');
+const testcardCarouselLabel = document.querySelector('#testcard-carousel-label');
 const videoSelect = document.querySelector('#prepared-video');
 const filePreview = document.querySelector('#file-preview');
 const filePreviewImage = document.querySelector('#file-preview-image');
@@ -48,14 +50,33 @@ function showFilePreview(select, unavailableText) {
 }
 
 function updateFileType() {
-  const testcardSelected = document.querySelector('#file-testcard').checked;
+  const testcardSelected = document.querySelector('#source-testcard').checked;
   testcardOptions.classList.toggle('d-none', !testcardSelected);
   videoOptions.classList.toggle('d-none', testcardSelected);
+  testcardPrevButton?.classList.toggle('d-none', !testcardSelected);
+  testcardNextButton?.classList.toggle('d-none', !testcardSelected);
   showFilePreview(
     testcardSelected ? testcardSelect : videoSelect,
     testcardSelected ? 'NO TESTCARDS FOUND' : 'NO PREPARED VIDEOS FOUND'
   );
+  if (testcardSelected) updateTestcardCarouselLabel();
 }
+
+function updateTestcardCarouselLabel() {
+  if (!testcardCarouselLabel) return;
+  const selected = testcardSelect.options[testcardSelect.selectedIndex];
+  testcardCarouselLabel.textContent = selected && selected.value ? selected.textContent : 'NO TESTCARDS FOUND';
+}
+
+function stepTestcard(direction) {
+  const optionCount = testcardSelect.options.length;
+  if (optionCount === 0) return;
+  testcardSelect.selectedIndex = (testcardSelect.selectedIndex + direction + optionCount) % optionCount;
+  testcardSelect.dispatchEvent(new Event('change'));
+}
+
+testcardPrevButton?.addEventListener('click', () => stepTestcard(-1));
+testcardNextButton?.addEventListener('click', () => stepTestcard(1));
 
 previewImage.addEventListener('load', () => preview.classList.add('is-live'));
 previewImage.addEventListener('error', () => {
@@ -69,9 +90,11 @@ filePreviewImage.addEventListener('error', () => {
 });
 
 cameraSelect.addEventListener('change', startPreview);
-testcardSelect.addEventListener('change', () => showFilePreview(testcardSelect, 'NO TESTCARDS FOUND'));
+testcardSelect.addEventListener('change', () => {
+  showFilePreview(testcardSelect, 'NO TESTCARDS FOUND');
+  updateTestcardCarouselLabel();
+});
 videoSelect.addEventListener('change', () => showFilePreview(videoSelect, 'NO PREPARED VIDEOS FOUND'));
-fileTypeOptions.forEach((option) => option.addEventListener('change', updateFileType));
 
 sourceOptions.forEach((option) => {
   option.addEventListener('change', () => {
@@ -89,6 +112,8 @@ sourceOptions.forEach((option) => {
 
 if (document.querySelector('#source-camera').checked) {
   startPreview();
+} else {
+  updateFileType();
 }
 
 const frequencyInput = document.querySelector('#frequency');
@@ -107,13 +132,87 @@ symbolRateSelect?.addEventListener('change', updateSignalSummary);
 fecSelect?.addEventListener('change', updateSignalSummary);
 updateSignalSummary();
 
+// Prepared videos live in preprocessed_<W>x<H>/ folders, one per
+// resolution - which folder is right depends on the selected SR/FEC (see
+// video_folder_for_sr_fec() in app.py), so the list has to refresh
+// whenever either selector changes, not just once at page load.
+async function refreshPreparedVideos() {
+  if (!symbolRateSelect || !fecSelect || !videoSelect) return;
+  const previouslySelected = videoSelect.value;
+  try {
+    const response = await fetch(
+      `/api/videos?symbol_rate=${encodeURIComponent(symbolRateSelect.value)}&fec=${encodeURIComponent(fecSelect.value)}`
+    );
+    if (!response.ok) throw new Error('Video list request failed');
+    const data = await response.json();
+    videoSelect.innerHTML = '';
+    if (data.videos.length === 0) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = 'No prepared videos found';
+      videoSelect.appendChild(option);
+    } else {
+      data.videos.forEach((video) => {
+        const option = document.createElement('option');
+        option.value = video.value;
+        option.textContent = video.label;
+        option.dataset.previewUrl = video.preview_url;
+        videoSelect.appendChild(option);
+      });
+      if (data.videos.some((video) => video.value === previouslySelected)) {
+        videoSelect.value = previouslySelected;
+      }
+    }
+  } catch (_error) {
+    videoSelect.innerHTML = '<option value="">Unable to load videos</option>';
+  }
+  if (document.querySelector('#source-video')?.checked) {
+    showFilePreview(videoSelect, 'NO PREPARED VIDEOS FOUND');
+  }
+}
+
+symbolRateSelect?.addEventListener('change', refreshPreparedVideos);
+fecSelect?.addEventListener('change', refreshPreparedVideos);
+
 const txGain = document.querySelector('#tx-gain');
 const txGainValue = document.querySelector('#tx-gain-value');
 function updateTxGain() {
-  if (txGain && txGainValue) txGainValue.textContent = `${txGain.value} dB`.replace('-', '−');
+  if (!txGain || !txGainValue) return;
+  const dbValue = parseFloat(txGain.value);
+  const min = parseFloat(txGain.min);
+  const max = parseFloat(txGain.max);
+  const percent = Math.round(((dbValue - min) / (max - min)) * 100);
+  const dbText = `${dbValue} dB`.replace('-', '−');
+  txGainValue.innerHTML = `${percent}% <small>(${dbText})</small>`;
 }
 txGain?.addEventListener('input', updateTxGain);
 updateTxGain();
+
+// Live TX gain: publishes over MQTT immediately, independent of whether a
+// stream is currently running, so dragging the slider changes real RF
+// power mid-transmission - not just a value applied once at stream start.
+// Debounced (not sent on every pixel of drag) so a fast drag doesn't flood
+// MQTT with dozens of commands per second.
+let gainSendTimer = null;
+function sendLiveGain() {
+  if (!txGain) return;
+  clearTimeout(gainSendTimer);
+  gainSendTimer = setTimeout(() => {
+    fetch('/api/gain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gain_db: txGain.value }),
+    }).catch(() => {});
+  }, 120);
+}
+txGain?.addEventListener('input', sendLiveGain);
+
+function resetTxGain() {
+  if (!txGain) return;
+  txGain.value = txGain.min;
+  updateTxGain();
+  sendLiveGain();
+}
 
 function formatTelemetryNumber(value, decimals, suffix) {
   return typeof value === 'number' ? `${value.toFixed(decimals)}${suffix}` : `--${suffix}`;
@@ -146,16 +245,30 @@ let streamState = 'stopped';
 
 function renderStreamButton(status) {
   if (!streamToggle) return;
+  const previousStreamState = streamState;
   streamState = status.state;
+  // Reset to 0% (near-off) whenever a stream actually ends - a safety
+  // default so the next start never silently reuses whatever power level
+  // was left over from before, on a page nobody refreshed.
+  if (status.state === 'stopped' && previousStreamState !== 'stopped') {
+    resetTxGain();
+  }
   const busy = status.state === 'starting' || status.state === 'stopping';
   streamToggle.disabled = busy;
-  streamToggle.classList.toggle('btn-success', status.state !== 'streaming');
+  streamToggle.classList.toggle('btn-success', status.state !== 'streaming' && status.state !== 'error');
   streamToggle.classList.toggle('btn-warning', status.state === 'streaming');
+  streamToggle.classList.toggle('btn-danger', status.state === 'error');
   if (status.state === 'streaming') streamToggle.textContent = '■ Stop stream';
   else if (status.state === 'starting') streamToggle.textContent = 'Starting…';
   else if (status.state === 'stopping') streamToggle.textContent = 'Stopping…';
   else streamToggle.textContent = '▶ Start stream';
-  streamToggle.title = status.output_file ? `Local file: ${status.output_file}` : '';
+  streamToggle.title = status.state === 'streaming' ? 'Transmitting via Pluto' : '';
+
+  const statusMessage = document.querySelector('#stream-status-message');
+  if (statusMessage) {
+    statusMessage.classList.toggle('text-danger', status.state === 'error' && !!status.last_error);
+    statusMessage.textContent = status.state === 'error' ? (status.last_error || '') : '';
+  }
 }
 
 async function fetchStreamStatus() {
@@ -175,21 +288,29 @@ streamToggle?.addEventListener('click', async () => {
     if (streamState === 'streaming') {
       response = await fetch('/api/stream/stop', { method: 'POST' });
     } else {
-      const testcardMode = document.querySelector('#source-file')?.checked &&
-        document.querySelector('#file-testcard')?.checked;
-      if (!testcardMode) {
-        window.alert('For this first test, select File and Testcard.');
+      const source = document.querySelector('input[name="source-type"]:checked')?.value;
+      const body = {
+        source,
+        symbol_rate: symbolRateSelect.value,
+        fec: fecSelect.value,
+        gain_db: txGain.value,
+      };
+      if (source === 'testcard') {
+        body.testcard = testcardSelect.value;
+      } else if (source === 'camera') {
+        body.camera_device = cameraSelect.value;
+        body.audio_device = document.querySelector('#audio-source')?.value || '';
+      } else if (source === 'video') {
+        body.video = videoSelect.value;
+      } else {
+        window.alert('Select a source first.');
         streamToggle.disabled = false;
         return;
       }
       response = await fetch('/api/stream/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          testcard: testcardSelect.value,
-          symbol_rate: symbolRateSelect.value,
-          fec: fecSelect.value,
-        }),
+        body: JSON.stringify(body),
       });
     }
     const result = await response.json();

@@ -1,0 +1,78 @@
+# Top/bottom banner text + scrolling marquee text/color/geometry, for
+# datv_tx_plus.py's SOURCE == "video" ONLY - loaded fresh per run by
+# load_video_banner_marquee_config(source_path, width, height), once the
+# selected video file is known (see select_video_file() and main()).
+# SOURCE == "camera" has its own separate file, camera_banner_marquee.yaml,
+# with no per-item section (a live feed has no file identity to key off).
+#
+# Same lookup/fallback convention as testcard_overlays.yaml: keyed by the
+# active video's filename without extension (e.g. "Vacheron_Constantin"
+# for preprocessed_960x540/Vacheron_Constantin.mkv) and the active
+# profile's resolution ("<width>x<height>"). Anything not found under that
+# specific video+resolution falls back field-by-field to "default" below -
+# so you only need to write the values that actually need to differ for a
+# given video/resolution, not repeat everything.
+#
+# Whether each of top banner/bottom banner/marquee actually shows is NOT
+# here - that's asked interactively at startup
+# (ask_banner_and_marquee_settings() in datv_tx_plus.py). This file only
+# holds the fixed text/geometry/color/speed that's the same regardless of
+# on/off state.
+
+default:
+  top_banner:
+    text: "QO-100 DATV — 2020 Jetson Nano 2GB Hardware Encoder"
+    # 960x540's values were the original, visually-confirmed-on-hardware
+    # ones; 640x360/1280x720 started as a first pass (2026-09-07) scaled
+    # proportionally to width from that baseline (x0.667 / x1.333) - adjust
+    # after looking at a real capture at each resolution.
+    640x360:  {font_size: 10, bar_height: 20, bar_alpha: 0.7}
+    960x540:  {font_size: 10, bar_height: 30, bar_alpha: 0.6}
+    1280x720: {font_size: 10, bar_height: 40, bar_alpha: 0.6}
+  bottom_banner:
+    # Callsign/clock/telemetry text itself isn't configured here - CALLSIGN
+    # stays a top-level setting in datv_tx_plus.py (used well beyond just
+    # this banner). bar_height = text block height (~ font_size * 1.6px at
+    # 96 DPI) + 2x text_margin - all three overlays (callsign/clock/
+    # telemetry) share one font_size, never varied independently.
+    640x360:  {font_size: 10, bar_height: 20, bar_alpha: 0.6, text_margin: 4}
+    960x540:  {font_size: 10, bar_height: 30, bar_alpha: 0.6, text_margin: 6}
+    1280x720: {font_size: 10, bar_height: 40, bar_alpha: 0.6, text_margin: 8}
+  marquee:
+    # cairooverlay draws this at an unrestricted pixel x coordinate - the
+    # video frame clips it, so even text much wider than the picture
+    # enters completely from the right and exits completely to the left.
+    # Motion is based on video timestamps, not a Python-side polling tick,
+    # so it stays smooth regardless of text length.
+    text: >-
+      JETSON NANO DATV LIVE TRANSMISSION — This deliberately long demonstration
+      message travels completely into and out of the picture, even though its
+      rendered width is more than twice the width of a 960 pixel video frame —
+      QO-100 DIGITAL AMATEUR TELEVISION FROM HB9IIU — KEEP EXPERIMENTING, KEEP
+      LEARNING, AND ENJOY THE SIGNAL!
+    font_family: "Sans"
+    # [r, g, b, a], each 0.0-1.0 - Cairo's native color format (unlike
+    # testcard_overlays.yaml's 0xAARRGGBB integers: marquee text is drawn
+    # via cairooverlay/Cairo directly, not GStreamer's textoverlay element).
+    color_rgba: [1.0, 1.0, 1.0, 1.0]
+    # Semi-transparent backing band behind the text, full frame width (so
+    # it doesn't jump around with the text's own changing width/position) -
+    # set to null for no background at all, plain text over the picture.
+    bg_rgba: [0.0, 0.0, 0.0, 0.45]
+    # y_px = vertical position from the top of the frame. speed_px_per_second
+    # and font_size/padding all scale with resolution.
+    640x360:  {y_px: 0, font_size: 13, speed_px_per_second: 33.0,  bg_padding_top_px: 4, bg_padding_bottom_px: 3}
+    960x540:  {y_px: 8, font_size: 20, speed_px_per_second: 150.0, bg_padding_top_px: 6, bg_padding_bottom_px: 4}
+    1280x720: {y_px: 4, font_size: 27, speed_px_per_second: 67.0,  bg_padding_top_px: 8, bg_padding_bottom_px: 5}
+
+# Every known prepared video starts out with an empty override block
+# (nothing to override yet - all four inherit "default" above entirely) so
+# each one is ready to tune in place the moment a real capture shows a
+# clash (e.g. bright content under the top bar, or the marquee crossing
+# busy picture detail). Add a new top-level entry here (filename without
+# extension) for any video added to preprocessed_<W>x<H>/ later - see
+# preprocess_videos.py.
+"camera_tuning_reference": {}
+"Samsung_Test_cut": {}
+"tuning_reference": {}
+"Vacheron_Constantin": {}

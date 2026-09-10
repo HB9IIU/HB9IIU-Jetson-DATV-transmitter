@@ -47,6 +47,56 @@ PROFILES = {
                           "video_bitrate_kbps": 575, "audio_bitrate_kbps": 32},
     "sr500_fec23_720p": {"symbol_rate": 500000, "fec": "2/3", "resolution": (1280, 720),
                           "video_bitrate_kbps": 498, "audio_bitrate_kbps": 32},
+    # Confirmed via tune_profiles_for_testcard.py (2026-09-10): the sr333
+    # pair is safe at 1280x720 with the exact same video_bitrate_kbps as
+    # their 960x540 counterparts above - the testcard-at-720p hypothesis
+    # holds for sr333 too, not just sr500.
+    "sr333_fec34_720p": {"symbol_rate": 333000, "fec": "3/4", "resolution": (1280, 720),
+                          "video_bitrate_kbps": 342, "audio_bitrate_kbps": 32},
+    "sr333_fec23_720p": {"symbol_rate": 333000, "fec": "2/3", "resolution": (1280, 720),
+                          "video_bitrate_kbps": 292, "audio_bitrate_kbps": 32},
+    # Confirmed via tune_profiles_for_testcard.py (2026-09-10): unlike
+    # sr333/sr500, sr250 sits close enough to the H.265 encoder's real
+    # bitrate floor at 1280x720 that the 640x360 bitrate isn't safe as-is -
+    # lowered from 233 to the measured safe optimum. sr250_fec23_720p was
+    # tried too and had to be dropped entirely: the encoder's real output
+    # plateaued around 325-326 kbit/s regardless of target, above this
+    # profile's 313015 bit/s TS capacity ceiling - no bitrate fixes that,
+    # same failure mode as sr125 at 640x360.
+    "sr250_fec34_720p": {"symbol_rate": 250000, "fec": "3/4", "resolution": (1280, 720),
+                          "video_bitrate_kbps": 228, "audio_bitrate_kbps": 32},
+}
+
+# (symbol_rate_ksps, fec) -> which PROFILES entry to use, one table per
+# SOURCE family - single source of truth for both datv_tx_plus.py (which
+# lets the user set SR/FEC/SOURCE directly) and datv_engine.py (which
+# receives symbol_rate/fec from the web UI). Keeping this here instead of
+# duplicated in both avoids exactly the kind of silent drift that made
+# datv_engine.py briefly pick the wrong (non-recommended) resolution for
+# sr333/sr250-FEC3/4 in the web UI (2026-09-10) - its old ad-hoc
+# "_720p only if symbol_rate == 500" logic predated the sr333/sr250 720p
+# additions below.
+#
+# Testcard mode always prefers the highest resolution confirmed safe on
+# real testcard content by tune_profiles_for_testcard.py (see
+# testcard_summary.txt); camera/video mode always uses the plain
+# (non-"_720p") base entry, since real motion content measured better at
+# the lower resolution (see tune_profiles.py).
+TESTCARD_PROFILE_NAMES = {
+    (250, "2/3"): "sr250_fec23",        # 640x360 - no 720p option exists
+    (250, "3/4"): "sr250_fec34_720p",   # 1280x720
+    (333, "2/3"): "sr333_fec23_720p",   # 1280x720
+    (333, "3/4"): "sr333_fec34_720p",   # 1280x720
+    (500, "2/3"): "sr500_fec23_720p",   # 1280x720
+    (500, "3/4"): "sr500_fec34_720p",   # 1280x720
+}
+CAMERA_VIDEO_PROFILE_NAMES = {
+    (250, "2/3"): "sr250_fec23",
+    (250, "3/4"): "sr250_fec34",
+    (333, "2/3"): "sr333_fec23",
+    (333, "3/4"): "sr333_fec34",
+    (500, "2/3"): "sr500_fec23",
+    (500, "3/4"): "sr500_fec34",
 }
 
 # Applied uniformly to every profile above via configure_pluto() - not part
