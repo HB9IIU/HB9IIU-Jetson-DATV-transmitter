@@ -48,6 +48,8 @@
 
     .carousel-arrow { position: absolute; z-index: 3; top: 50%; transform: translateY(-50%); width: 2.6rem; height: 2.6rem; display: grid; place-items: center; border-radius: 50%; border: 1px solid #3a5265; background: rgba(7, 17, 27, .65); color: #fff; font-size: 1.4rem; line-height: 1; cursor: pointer; transition: background-color .15s ease, border-color .15s ease; }
     .carousel-arrow:hover { background: rgba(37, 137, 255, .35); border-color: var(--blue); }
+    .carousel-arrow:disabled { cursor: not-allowed; opacity: .5; }
+    .carousel-arrow:disabled:hover { background: rgba(7, 17, 27, .65); border-color: #3a5265; }
     .carousel-arrow-prev { left: .65rem; }
     .carousel-arrow-next { right: .65rem; }
 
@@ -63,6 +65,7 @@
     .btn-check:checked + .source-choice-btn { color: #fff; border-color: var(--blue); background: rgba(37,137,255,.13); box-shadow: 0 0 0 .18rem rgba(37,137,255,.09); }
     .btn-check:checked + .source-choice-btn .source-choice-icon { color: #fff; background: var(--blue); }
     .btn-check:focus-visible + .source-choice-btn { outline: 3px solid rgba(37,137,255,.3); outline-offset: 2px; }
+    .btn-check:disabled + .source-choice-btn { cursor: not-allowed; opacity: .5; }
     .source-placeholder { min-height: 15rem; align-content: center; border: 1px dashed #3a5265; background: #0a1721; }
     #file-preview img { object-fit: contain; background: #07131d; }
 

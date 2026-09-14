@@ -23,12 +23,23 @@ ORPHAN_STOP_TIMEOUT_SECONDS = 8
 # GAIN_DB in datv_tx_plus.py for the full story.
 GAIN_MIN_DB = -60.0
 GAIN_MAX_DB = 0.0
+# Matches the selectable uplink range in static/js/batc-spectrum.js
+# (START_MHZ/END_MHZ minus TRANSPONDER_OFFSET_MHZ: 10490.5-8090 to
+# 10499.5-8090) - the actual QO-100 wideband transponder uplink span.
+FREQUENCY_MIN_HZ = 2400500000
+FREQUENCY_MAX_HZ = 2409500000
 
 
 def _validate_gain(gain_db):
     if not GAIN_MIN_DB <= gain_db <= GAIN_MAX_DB:
         raise ValueError("TX gain must be between {:.0f} and {:.0f} dB".format(
             GAIN_MIN_DB, GAIN_MAX_DB))
+
+
+def _validate_frequency(frequency_hz):
+    if not FREQUENCY_MIN_HZ <= frequency_hz <= FREQUENCY_MAX_HZ:
+        raise ValueError("Frequency must be between {:.1f} and {:.1f} MHz".format(
+            FREQUENCY_MIN_HZ / 1e6, FREQUENCY_MAX_HZ / 1e6))
 
 
 class DatvEngine(object):
@@ -168,12 +179,13 @@ class DatvEngine(object):
             self._state = "streaming"
             return self._status_unlocked()
 
-    def start_testcard(self, testcard_name, symbol_rate, fec, gain_db):
+    def start_testcard(self, testcard_name, symbol_rate, fec, gain_db, frequency_hz):
         try:
             profile_key = TESTCARD_PROFILE_NAMES[(symbol_rate, fec)]
         except KeyError:
             raise ValueError("Unsupported SR/FEC combination")
         _validate_gain(gain_db)
+        _validate_frequency(frequency_hz)
 
         testcard_dir = os.path.abspath(os.path.join(self.project_dir, "testcards"))
         source_path = os.path.abspath(os.path.join(testcard_dir, testcard_name))
@@ -187,15 +199,17 @@ class DatvEngine(object):
             "--testcard", source_path,
             "--profile", profile_key,
             "--gain", str(gain_db),
+            "--frequency", str(frequency_hz),
         ])
 
     def start_camera(self, camera_device, camera_is_csi, audio_device, symbol_rate, fec,
-                      gain_db, top_banner, bottom_banner, marquee):
+                      gain_db, frequency_hz, top_banner, bottom_banner, marquee):
         try:
             profile_key = CAMERA_VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
         except KeyError:
             raise ValueError("Unsupported SR/FEC combination")
         _validate_gain(gain_db)
+        _validate_frequency(frequency_hz)
         if not camera_device or not audio_device:
             raise ValueError("Camera and audio device are required")
 
@@ -203,6 +217,7 @@ class DatvEngine(object):
             "--source", "camera",
             "--profile", profile_key,
             "--gain", str(gain_db),
+            "--frequency", str(frequency_hz),
             "--camera-device", camera_device,
             "--camera-is-csi", "1" if camera_is_csi else "0",
             "--audio-device", audio_device,
@@ -211,13 +226,14 @@ class DatvEngine(object):
             "--marquee", "1" if marquee else "0",
         ])
 
-    def start_video(self, video_value, symbol_rate, fec, gain_db,
+    def start_video(self, video_value, symbol_rate, fec, gain_db, frequency_hz,
                      top_banner, bottom_banner, marquee):
         try:
             profile_key = CAMERA_VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
         except KeyError:
             raise ValueError("Unsupported SR/FEC combination")
         _validate_gain(gain_db)
+        _validate_frequency(frequency_hz)
 
         # video_value is "preprocessed_<W>x<H>/<file>.mkv" - the same
         # "value" shape app.py's detect_preprocessed_videos()/api_videos()
@@ -236,6 +252,7 @@ class DatvEngine(object):
             "--source", "video",
             "--profile", profile_key,
             "--gain", str(gain_db),
+            "--frequency", str(frequency_hz),
             "--video", source_path,
             "--top-banner", "1" if top_banner else "0",
             "--bottom-banner", "1" if bottom_banner else "0",

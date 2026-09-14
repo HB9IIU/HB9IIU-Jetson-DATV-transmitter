@@ -13,15 +13,16 @@ try:
 except ImportError:
     mqtt = None
 
-from camera_preview import stream_camera
+from camera_preview import stop_active_preview, stream_camera
 from datv_engine import DatvEngine
 from dvbs2_profiles import CAMERA_VIDEO_PROFILE_NAMES, PROFILES
+from pluto_fft_bridge import get_latest_frame, start_background_reader
 
 # The web GUI polls /api/stream/status and /api/telemetry every 1-2s, which
 # floods the terminal with a request-log line each time under werkzeug's
 # default INFO level - drowning out the real DEBUG prints below. Only
 # WARNING and above (e.g. actual errors) still print.
-logging.getLogger("werkzeug").setLevel(logging.WARNING)
+logging.getLogger("werkzeug").setLevel(logging.INFO)
 
 app = Flask(__name__)
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +37,51 @@ DEFAULT_FEC = "3/4"
 PLUTO_IP = "192.168.2.1"
 PLUTO_MQTT_PORT = 1883
 PLUTO_CALLSIGN = "HB9IIU"
+# Fallback only, used before any stream has been started - the RX WebFFT is
+# centred on our own real, live TX frequency (CURRENT_TX_FREQUENCY_HZ,
+# set by stream_start()) to visually confirm real RF is going out (see
+# pluto_fft_bridge.py). This is a completely separate MQTT control path
+# (app.py's own PLUTO_MQTT_CLIENT) from datv_tx_plus.py's own FREQUENCY_HZ,
+# even though both now ultimately come from the same web UI selection.
+PLUTO_TX_FREQUENCY_HZ = 2405000000
+# Fixed, known-working wide capture span - tried computing a narrow
+# per-symbol-rate span instead (2026-09-13) and the Pluto went quiet
+# (no frames at all), so this stays wide/reliable and the zoom is done
+# client-side instead (see drawLocalFft() in datv.js).
+PLUTO_FFT_SPAN_HZ = 9000000
+# Confirmed empirically (2026-09-13) across three different symbol rates
+# (250/333/500 kS/s) - the real captured width is consistently 2x what we
+# publish as rx/webfft/span, not equal to it. Every test showed the known
+# signal occupying ~1/6 of our intended-1/3 zoom window, a clean, fixed
+# ratio (not random measurement noise) - most likely explained by the
+# Pluto's "span" meaning +/- this much from centre, not the total width.
+# Used only for our own Hz-per-bin math (labels/cropping) - the MQTT value
+# actually published is unchanged, whatever the firmware does with it.
+PLUTO_FFT_ACTUAL_WIDTH_HZ = PLUTO_FFT_SPAN_HZ * 2
+# DVB-S2 occupied bandwidth is roughly symbol_rate * (1 + rolloff) - 1.35
+# matches the same rolloff-derived multiplier already used elsewhere in
+# this project (see dvbs2_tx's choose_output_rf_bandwidth() for LimeSDR,
+# same idea).
+OCCUPIED_BANDWIDTH_FACTOR = 1.35
+# The web UI should crop its display to margin + occupied-bandwidth +
+# margin, margin == occupied bandwidth - i.e. 3x it - not the whole capture
+# span. Computed from the live symbol rate (set_current_symbol_rate()) and
+# reported to the frontend via /api/fft, rather than the frontend guessing
+# a fixed percentage of the span.
+FFT_ZOOM_TO_BANDWIDTH_RATIO = 3
+# Set by set_pluto_rx_fft() whenever a stream starts - None until then,
+# meaning /api/fft has nothing valid to report yet.
+CURRENT_FFT_SPAN_HZ = None
+# Set by stream_start() - the live symbol rate in kS/s (333, not 333000 -
+# matches the web UI's dropdown value and dvbs2_profiles.py's
+# (333, "3/4")-style profile keys), used to size the zoom window in
+# /api/fft. None when no stream has been started yet.
+CURRENT_SYMBOL_RATE_KSPS = None
+# Set by stream_start() to the real live TX frequency (Hz) - the RX WebFFT
+# must follow whatever frequency was actually selected, not a fixed
+# default, now that frequency is genuinely user-selectable (2026-09-13).
+# None until a stream has been started at least once.
+CURRENT_TX_FREQUENCY_HZ = None
 PLUTO_TELEMETRY = {}
 PLUTO_STATE = {"connected": False, "last_message": 0.0}
 PLUTO_MQTT_CLIENT = None
@@ -133,11 +179,54 @@ def _start_pluto_telemetry():
     client.loop_start()
 
 
+def set_pluto_rx_fft(enabled, frequency_hz=None):
+    """Enable/disable the Pluto's own RX WebFFT service over MQTT - a
+    separate, independent control path from datv_tx_plus.py's TX
+    configuration (same firmware, different MQTT topics, same broker).
+    Safe no-op if MQTT isn't connected yet.
+
+    Uses a fixed, known-working wide span (PLUTO_FFT_SPAN_HZ) rather than
+    asking the Pluto to narrow its own capture - tried computing a tight
+    per-symbol-rate span instead (2026-09-13) and the Pluto appeared to
+    reject/ignore it, going quiet with no frames at all. The zoom effect is
+    done client-side instead - see drawLocalFft() in datv.js - since we
+    already know our own signal sits at the exact centre of this capture
+    by construction (rx/webfft/frequency is always set to our own real,
+    live TX frequency - frequency_hz, required when enabling).
+    """
+    global CURRENT_FFT_SPAN_HZ, CURRENT_TX_FREQUENCY_HZ
+    if PLUTO_MQTT_CLIENT is None:
+        return
+    prefix = "cmd/pluto/{}/".format(PLUTO_CALLSIGN)
+    if enabled:
+        # CURRENT_FFT_SPAN_HZ is the real captured width for our own math
+        # (labels/cropping) - the MQTT publish just below still sends the
+        # raw PLUTO_FFT_SPAN_HZ value, since that's the number the firmware
+        # actually expects regardless of how we interpret its real effect.
+        CURRENT_FFT_SPAN_HZ = PLUTO_FFT_ACTUAL_WIDTH_HZ
+        CURRENT_TX_FREQUENCY_HZ = frequency_hz
+        PLUTO_MQTT_CLIENT.publish(prefix + "rx/webfft/frequency",
+                                   payload=str(frequency_hz), qos=1)
+        PLUTO_MQTT_CLIENT.publish(prefix + "rx/webfft/span",
+                                   payload=str(PLUTO_FFT_SPAN_HZ), qos=1)
+        PLUTO_MQTT_CLIENT.publish(prefix + "rx/stream/mode", payload="webfft", qos=1)
+        PLUTO_MQTT_CLIENT.publish(prefix + "rx/stream/run", payload="1", qos=1)
+    else:
+        PLUTO_MQTT_CLIENT.publish(prefix + "rx/stream/run", payload="0", qos=1)
+
+
 _start_pluto_telemetry()
+start_background_reader()
 
 
 def detect_video_devices():
-    """Return the V4L2 devices currently exposed by the Jetson."""
+    """Return the V4L2 devices currently exposed by the Jetson.
+
+    The onboard CSI camera (imx219, labelled "vi-output...") is always
+    sorted last - it's /dev/video0 by enumeration order, which would
+    otherwise put it first/default-selected in the dropdown ahead of any
+    USB webcam, even though the webcam is the one usually wanted.
+    """
     devices = []
     for path in sorted(glob.glob("/dev/video*")):
         entry = os.path.basename(path)
@@ -152,6 +241,7 @@ def detect_video_devices():
             name = "Unknown camera"
 
         devices.append({"value": path, "label": "{} ({})".format(name, path)})
+    devices.sort(key=lambda device: device["label"].startswith("vi-output"))
     return devices
 
 
@@ -301,14 +391,45 @@ def stream_status():
     return jsonify(STREAM_ENGINE.status())
 
 
+@app.route("/api/fft")
+def fft():
+    """Latest RX WebFFT frame from the Pluto's own local receiver, bridged
+    in-process by pluto_fft_bridge.py - bins is null when nothing recent
+    has arrived (RX WebFFT not enabled, or the Pluto link is down).
+    Includes the known tuning (center/span) so the frontend can label the
+    frequency axis and crop to a zoomed-in view around the centre, where
+    our own signal always sits by construction (rx/webfft/frequency is
+    always our own TX frequency - see set_pluto_rx_fft()).
+    """
+    zoom_span_hz = None
+    if CURRENT_SYMBOL_RATE_KSPS:
+        occupied_bandwidth_hz = CURRENT_SYMBOL_RATE_KSPS * 1000 * OCCUPIED_BANDWIDTH_FACTOR
+        zoom_span_hz = occupied_bandwidth_hz * FFT_ZOOM_TO_BANDWIDTH_RATIO
+    return jsonify({
+        "bins": get_latest_frame(),
+        "center_hz": CURRENT_TX_FREQUENCY_HZ or PLUTO_TX_FREQUENCY_HZ,
+        "span_hz": CURRENT_FFT_SPAN_HZ,
+        "zoom_span_hz": zoom_span_hz,
+    })
+
+
 @app.route("/api/stream/start", methods=["POST"])
 def stream_start():
     data = request.get_json(silent=True) or {}
     source = data.get("source")
+    # The camera preview and the real transmission can't both hold the same
+    # /dev/videoN open at once - stop any active preview first, regardless
+    # of which source is being started, so a leftover preview never causes
+    # a spurious "Device or resource busy" failure (real bug, 2026-09-13).
+    stop_active_preview()
     try:
         symbol_rate = int(data.get("symbol_rate"))
         fec = str(data.get("fec"))
         gain_db = float(data.get("gain_db"))
+        # Frontend sends MHz (e.g. "2405.043", matching frequencyInput's
+        # value set by static/js/batc-spectrum.js's green-slot click
+        # handler) - convert to whole Hz for the rest of the stack.
+        frequency_hz = round(float(data.get("frequency")) * 1e6)
         # Banner/marquee toggles default on - matches ask_yes_no()'s own
         # [Y/n] default in datv_tx_plus.py's interactive prompt, which this
         # replaces for a web-started stream. No dedicated UI control for
@@ -321,28 +442,39 @@ def stream_start():
             testcard = data.get("testcard", "")
             if testcard not in {item["value"] for item in detect_testcards()}:
                 return jsonify({"error": "Select a valid testcard"}), 400
-            status_data = STREAM_ENGINE.start_testcard(testcard, symbol_rate, fec, gain_db)
+            status_data = STREAM_ENGINE.start_testcard(
+                testcard, symbol_rate, fec, gain_db, frequency_hz)
         elif source == "camera":
             camera_device = data.get("camera_device", "")
             audio_device = data.get("audio_device", "")
             status_data = STREAM_ENGINE.start_camera(
                 camera_device, is_csi_camera(camera_device), audio_device,
-                symbol_rate, fec, gain_db, top_banner, bottom_banner, marquee)
+                symbol_rate, fec, gain_db, frequency_hz, top_banner, bottom_banner, marquee)
         elif source == "video":
             status_data = STREAM_ENGINE.start_video(
-                data.get("video", ""), symbol_rate, fec, gain_db,
+                data.get("video", ""), symbol_rate, fec, gain_db, frequency_hz,
                 top_banner, bottom_banner, marquee)
         else:
             return jsonify({"error": "Unknown source"}), 400
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    except (ValueError, TypeError) as exc:
+        # TypeError included alongside ValueError: int(None)/float(None) -
+        # a required field missing from the request body entirely (e.g. an
+        # older cached frontend not yet sending it) - raises TypeError, not
+        # ValueError, and was otherwise an unhandled 500 that broke the
+        # page with an HTML error response instead of a clean JSON one
+        # (real bug hit 2026-09-14 testing the frequency field).
+        return jsonify({"error": "Missing or invalid field: {}".format(exc)}), 400
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 409
+    global CURRENT_SYMBOL_RATE_KSPS
+    CURRENT_SYMBOL_RATE_KSPS = symbol_rate
+    set_pluto_rx_fft(True, frequency_hz)
     return jsonify(status_data), 202
 
 
 @app.route("/api/stream/stop", methods=["POST"])
 def stream_stop():
+    set_pluto_rx_fft(False)
     return jsonify(STREAM_ENGINE.stop())
 
 
@@ -450,6 +582,6 @@ def video_thumbnail():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
 
 

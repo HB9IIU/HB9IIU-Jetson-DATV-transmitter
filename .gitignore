@@ -28,3 +28,7 @@ original videos backup/
 # Local debug capture (TX_OUTPUT="file" output) - a generated artifact, not
 # source.
 debug_output.ts
+
+# preprocess_videos.py output - generated per-resolution encodes, not
+# source; individual files can exceed GitHub's 100MB limit.
+preprocessed_*x*/

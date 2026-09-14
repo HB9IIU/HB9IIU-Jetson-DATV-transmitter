@@ -35,6 +35,7 @@ def main():
     parser.add_argument("--source", required=True, choices=("testcard", "camera", "video"))
     parser.add_argument("--profile", required=True, choices=sorted(tx.PROFILES))
     parser.add_argument("--gain", required=True, type=float)
+    parser.add_argument("--frequency", required=True, type=int)
     # testcard mode never uses these three (ask_banner_and_marquee_settings
     # is never called for it - see datv_tx_plus.py's main()), so they're
     # harmless no-ops there and just need a default rather than being
@@ -54,6 +55,7 @@ def main():
 
     _patch("PROFILE", args.profile)
     _patch("GAIN_DB", args.gain)
+    _patch("FREQUENCY_HZ", args.frequency)
     _patch("SOURCE", args.source)
     _patch("TX_OUTPUT", "pluto")
     _patch("ask_banner_and_marquee_settings",

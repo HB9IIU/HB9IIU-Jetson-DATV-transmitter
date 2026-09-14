@@ -5,6 +5,7 @@ const sourceOptions = document.querySelectorAll('input[name="source-type"]');
 const cameraPanel = document.querySelector('#camera-source-panel');
 const filePanel = document.querySelector('#file-source-panel');
 const cameraSelect = document.querySelector('#video-source');
+const audioSelect = document.querySelector('#audio-source');
 const preview = document.querySelector('#camera-preview');
 const previewImage = document.querySelector('#camera-preview-image');
 const previewMessage = document.querySelector('#preview-message');
@@ -240,13 +241,162 @@ async function updateTelemetry() {
 updateTelemetry();
 window.setInterval(updateTelemetry, 2000);
 
+const localFftCanvas = document.querySelector('#local-fft-canvas');
+const localFftStatus = document.querySelector('#local-fft-status');
+const localFftContext = localFftCanvas?.getContext('2d');
+const localFftFreqLeft = document.querySelector('#local-fft-freq-left');
+const localFftFreqCenter = document.querySelector('#local-fft-freq-center');
+const localFftFreqRight = document.querySelector('#local-fft-freq-right');
+
+function formatMHz(hz) {
+  return `${(hz / 1e6).toFixed(3)} MHz`;
+}
+
+// Our own signal always sits exactly in the middle of the capture by
+// construction (app.py always tunes the Pluto's RX to our own TX
+// frequency), so a centre crop reliably isolates it. zoomSpanHz is
+// app.py's exact calculation (margin + occupied-bandwidth + margin,
+// margin == occupied bandwidth) from the live symbol rate - not a guessed
+// fraction, so the margins on each side of the plateau end up the same
+// width as the plateau itself.
+function cropToCenter(bins, spanHz, zoomSpanHz) {
+  const hzPerBin = spanHz / (bins.length - 1);
+  const cropCount = Math.max(8, Math.min(bins.length, Math.round(zoomSpanHz / hzPerBin)));
+  const start = Math.floor((bins.length - cropCount) / 2);
+  return bins.slice(start, start + cropCount);
+}
+
+function updateLocalFftAxis(data) {
+  if (!localFftFreqLeft || !localFftFreqCenter || !localFftFreqRight) return;
+  if (data.center_hz && data.zoom_span_hz) {
+    localFftFreqLeft.textContent = formatMHz(data.center_hz - data.zoom_span_hz / 2);
+    localFftFreqCenter.textContent = formatMHz(data.center_hz);
+    localFftFreqRight.textContent = formatMHz(data.center_hz + data.zoom_span_hz / 2);
+  } else {
+    localFftFreqLeft.textContent = '--';
+    localFftFreqCenter.textContent = '--';
+    localFftFreqRight.textContent = '--';
+  }
+}
+
+function drawLocalFft(bins, spanHz, zoomSpanHz) {
+  if (!localFftContext || !localFftCanvas) return;
+  // Match the canvas's internal pixel buffer to its displayed CSS size -
+  // without this it renders at a fixed default resolution (300x150) and
+  // looks blurry/stretched inside the actual panel size.
+  const displayWidth = localFftCanvas.clientWidth;
+  const displayHeight = localFftCanvas.clientHeight;
+  if (localFftCanvas.width !== displayWidth) localFftCanvas.width = displayWidth;
+  if (localFftCanvas.height !== displayHeight) localFftCanvas.height = displayHeight;
+  const width = localFftCanvas.width;
+  const height = localFftCanvas.height;
+  localFftContext.clearRect(0, 0, width, height);
+  if (!bins || bins.length === 0) return;
+
+  const plotted = (spanHz && zoomSpanHz) ? cropToCenter(bins, spanHz, zoomSpanHz) : bins;
+
+  // Auto-scale to the plotted range's own min/max, same reasoning as
+  // fft_viewer.html: real RX noise-floor values are a small fraction of
+  // full 16-bit scale, so a fixed axis would flatten everything to an
+  // invisible line near zero even with a real signal present.
+  let frameMin = plotted[0];
+  let frameMax = plotted[0];
+  for (let i = 1; i < plotted.length; i++) {
+    if (plotted[i] < frameMin) frameMin = plotted[i];
+    if (plotted[i] > frameMax) frameMax = plotted[i];
+  }
+  const range = Math.max(1, frameMax - frameMin);
+  // Leave headroom above the plateau instead of letting it touch the top
+  // edge - the trace only ever uses the bottom part of the canvas height.
+  const topMarginFraction = 0.2;
+  const plotHeight = height * (1 - topMarginFraction);
+  const points = plotted.map((value, i) => ({
+    x: (i / (plotted.length - 1)) * width,
+    y: height - ((value - frameMin) / range) * plotHeight,
+  }));
+
+  // Filled area under the trace, fading out towards the bottom - same
+  // idea as the BATC spectrum panel's look.
+  const gradient = localFftContext.createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0, 'rgba(255, 51, 51, .35)');
+  gradient.addColorStop(1, 'rgba(255, 51, 51, 0)');
+  localFftContext.beginPath();
+  localFftContext.moveTo(points[0].x, height);
+  for (const point of points) localFftContext.lineTo(point.x, point.y);
+  localFftContext.lineTo(points[points.length - 1].x, height);
+  localFftContext.closePath();
+  localFftContext.fillStyle = gradient;
+  localFftContext.fill();
+
+  localFftContext.strokeStyle = '#f33';
+  localFftContext.lineWidth = 1.5;
+  localFftContext.beginPath();
+  points.forEach((point, i) => {
+    if (i === 0) localFftContext.moveTo(point.x, point.y);
+    else localFftContext.lineTo(point.x, point.y);
+  });
+  localFftContext.stroke();
+}
+
+async function fetchLocalFft() {
+  if (!localFftCanvas) return;
+  try {
+    const response = await fetch('/api/fft', { cache: 'no-store' });
+    if (!response.ok) throw new Error('FFT request failed');
+    const data = await response.json();
+    const hasSignal = Array.isArray(data.bins) && data.bins.length > 0;
+    localFftStatus.textContent = hasSignal ? 'SIGNAL' : 'NO SIGNAL';
+    localFftStatus.classList.toggle('text-bg-success', hasSignal);
+    localFftStatus.classList.toggle('text-bg-secondary', !hasSignal);
+    updateLocalFftAxis(data);
+    drawLocalFft(data.bins, data.span_hz, data.zoom_span_hz);
+  } catch (_error) {
+    localFftStatus.textContent = 'UNAVAILABLE';
+    localFftStatus.classList.remove('text-bg-success');
+    localFftStatus.classList.add('text-bg-secondary');
+    drawLocalFft(null);
+  }
+}
+
+if (localFftCanvas) {
+  fetchLocalFft();
+  window.setInterval(fetchLocalFft, 150);
+}
+
 const streamToggle = document.querySelector('#stream-toggle');
+const copyLogButton = document.querySelector('#copy-log-button');
 let streamState = 'stopped';
+
+copyLogButton?.addEventListener('click', async () => {
+  const text = document.querySelector('#stream-status-message')?.textContent || '';
+  try {
+    await navigator.clipboard.writeText(text);
+    const originalLabel = copyLogButton.textContent;
+    copyLogButton.textContent = 'Copied!';
+    window.setTimeout(() => { copyLogButton.textContent = originalLabel; }, 1500);
+  } catch (_error) {
+    window.alert('Could not copy to clipboard - your browser may be blocking clipboard access on this connection (clipboard access usually requires HTTPS or localhost).');
+  }
+});
+
+function setSourceControlsDisabled(disabled) {
+  sourceOptions.forEach((input) => { input.disabled = disabled; });
+  [cameraSelect, audioSelect, testcardSelect, videoSelect,
+    testcardPrevButton, testcardNextButton,
+    frequencyInput, symbolRateSelect, fecSelect].forEach((element) => {
+    if (element) element.disabled = disabled;
+  });
+}
 
 function renderStreamButton(status) {
   if (!streamToggle) return;
   const previousStreamState = streamState;
   streamState = status.state;
+  // Source can only be changed while fully stopped - switching source mid-
+  // stream would need a pipeline restart (a brief RF dropout while the
+  // receiver re-acquires lock), so we require an explicit Stop first
+  // instead of restarting automatically underneath the user.
+  setSourceControlsDisabled(status.state !== 'stopped' && status.state !== 'error');
   // Reset to 0% (near-off) whenever a stream actually ends - a safety
   // default so the next start never silently reuses whatever power level
   // was left over from before, on a page nobody refreshed.
@@ -256,8 +406,7 @@ function renderStreamButton(status) {
   const busy = status.state === 'starting' || status.state === 'stopping';
   streamToggle.disabled = busy;
   streamToggle.classList.toggle('btn-success', status.state !== 'streaming' && status.state !== 'error');
-  streamToggle.classList.toggle('btn-warning', status.state === 'streaming');
-  streamToggle.classList.toggle('btn-danger', status.state === 'error');
+  streamToggle.classList.toggle('btn-danger', status.state === 'streaming' || status.state === 'error');
   if (status.state === 'streaming') streamToggle.textContent = '■ Stop stream';
   else if (status.state === 'starting') streamToggle.textContent = 'Starting…';
   else if (status.state === 'stopping') streamToggle.textContent = 'Stopping…';
@@ -265,10 +414,12 @@ function renderStreamButton(status) {
   streamToggle.title = status.state === 'streaming' ? 'Transmitting via Pluto' : '';
 
   const statusMessage = document.querySelector('#stream-status-message');
+  const hasErrorText = status.state === 'error' && !!status.last_error;
   if (statusMessage) {
-    statusMessage.classList.toggle('text-danger', status.state === 'error' && !!status.last_error);
-    statusMessage.textContent = status.state === 'error' ? (status.last_error || '') : '';
+    statusMessage.classList.toggle('text-danger', hasErrorText);
+    statusMessage.textContent = hasErrorText ? status.last_error : '';
   }
+  copyLogButton?.classList.toggle('d-none', !hasErrorText);
 }
 
 async function fetchStreamStatus() {
@@ -288,12 +439,18 @@ streamToggle?.addEventListener('click', async () => {
     if (streamState === 'streaming') {
       response = await fetch('/api/stream/stop', { method: 'POST' });
     } else {
+      if (!frequencyInput.value) {
+        window.alert('Select a frequency first (click a green slot on the BATC spectrum).');
+        streamToggle.disabled = false;
+        return;
+      }
       const source = document.querySelector('input[name="source-type"]:checked')?.value;
       const body = {
         source,
         symbol_rate: symbolRateSelect.value,
         fec: fecSelect.value,
         gain_db: txGain.value,
+        frequency: frequencyInput.value,
       };
       if (source === 'testcard') {
         body.testcard = testcardSelect.value;

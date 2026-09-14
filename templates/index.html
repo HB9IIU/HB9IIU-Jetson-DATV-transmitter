@@ -30,9 +30,7 @@
       <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-end gap-3">
         <div>
           <h1 class="display-6 fw-bold mb-2">Get on air in three steps</h1>
-          <p class="text-muted-custom mb-0">Simple, safety-first control for your Jetson Nano and PlutoSDR.</p>
         </div>
-        <div class="small text-muted-custom">Testcard → Pluto TX is live · camera and video sources are still in progress</div>
       </div>
     </header>
 
@@ -143,25 +141,45 @@
         </article>
       </div>
 
-      <div class="col-12 col-xl-12">
+      <div class="col-12 col-xl-8">
         <article class="surface step-card p-3 p-lg-4">
           <div class="d-flex align-items-center gap-3 mb-4"><span class="step-number">3</span><h2 class="h4 mb-0">Go live</h2></div>
+
           <div class="d-flex justify-content-between align-items-center mb-2"><label class="form-label fw-semibold mb-0" for="tx-gain">TX power</label><span class="gain-value" id="tx-gain-value">0% <small>(−60 dB)</small></span></div>
           <input class="form-range" type="range" id="tx-gain" min="-60" max="0" step="0.25" value="-60" aria-label="TX gain">
           <div class="d-flex justify-content-between small text-muted-custom mb-4"><span>0% (near-off)</span><span>100% (max power)</span></div>
 
-
           <div class="row g-2">
             <div class="col-12"><button class="btn btn-success btn-lg fw-bold w-100" id="stream-toggle" type="button">▶ Start stream</button></div>
           </div>
-          <pre class="small mt-2 mb-0" id="stream-status-message" style="white-space: pre-wrap;"></pre>
 
+          <div class="d-flex justify-content-end mt-2">
+            <button class="btn btn-sm btn-outline-secondary d-none" id="copy-log-button" type="button">Copy log</button>
+          </div>
+          <pre class="small mb-0" id="stream-status-message" style="white-space: pre-wrap;"></pre>
         </article>
       </div>
-    </section>
 
-    <section class="surface mt-4 p-3 p-lg-4" aria-label="Advanced settings placeholder">
-      <div class="advanced-row d-flex align-items-center justify-content-between"><div><span class="me-2">⚙</span><strong>Advanced</strong><span class="text-muted-custom ms-2 d-none d-sm-inline">Video, audio, modulation and network settings</span></div><span aria-hidden="true">⌄</span></div>
+      <div class="col-12 col-xl-4">
+        <article class="surface step-card p-3 p-lg-4">
+          <div class="batc-panel">
+            <div class="d-flex justify-content-between align-items-center px-3 pt-3 pb-2">
+              <div>
+                <div class="fw-semibold">Local Pluto RX spectrum</div>
+              </div>
+              <span class="badge rounded-pill text-bg-secondary" id="local-fft-status">NO SIGNAL</span>
+            </div>
+            <div class="batc-spectrum" style="height: 8rem;" aria-label="Live local Pluto RX spectrum, confirming real transmission">
+              <canvas id="local-fft-canvas"></canvas>
+            </div>
+            <div class="d-flex justify-content-between small text-muted-custom px-3 py-2" id="local-fft-axis">
+              <span id="local-fft-freq-left">--</span>
+              <span id="local-fft-freq-center">--</span>
+              <span id="local-fft-freq-right">--</span>
+            </div>
+          </div>
+        </article>
+      </div>
     </section>
 
     <section class="mt-4" aria-label="Live telemetry">

@@ -219,7 +219,7 @@
   }
 
   canvas.addEventListener('click', (event) => {
-    if (!frequencyInput) return;
+    if (!frequencyInput || frequencyInput.disabled) return;
     const rectangle = canvas.getBoundingClientRect();
     const x = event.clientX - rectangle.left;
     const y = event.clientY - rectangle.top;
