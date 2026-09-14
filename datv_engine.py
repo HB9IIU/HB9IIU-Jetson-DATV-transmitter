@@ -14,6 +14,7 @@ import threading
 import time
 
 from dvbs2_profiles import CAMERA_VIDEO_PROFILE_NAMES, TESTCARD_PROFILE_NAMES
+import usb_video_key
 
 LOG_TAIL_CHARS = 4000
 ORPHAN_STOP_TIMEOUT_SECONDS = 8
@@ -203,7 +204,7 @@ class DatvEngine(object):
         ])
 
     def start_camera(self, camera_device, camera_is_csi, audio_device, symbol_rate, fec,
-                      gain_db, frequency_hz, top_banner, bottom_banner, marquee):
+                      gain_db, frequency_hz, top_banner, bottom_banner, marquee, marquee_text):
         try:
             profile_key = CAMERA_VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
         except KeyError:
@@ -224,10 +225,11 @@ class DatvEngine(object):
             "--top-banner", "1" if top_banner else "0",
             "--bottom-banner", "1" if bottom_banner else "0",
             "--marquee", "1" if marquee else "0",
+            "--marquee-text", marquee_text,
         ])
 
-    def start_video(self, video_value, symbol_rate, fec, gain_db, frequency_hz,
-                     top_banner, bottom_banner, marquee):
+    def start_video(self, video_path, symbol_rate, fec, gain_db, frequency_hz,
+                     top_banner, bottom_banner, marquee, marquee_text):
         try:
             profile_key = CAMERA_VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
         except KeyError:
@@ -235,15 +237,21 @@ class DatvEngine(object):
         _validate_gain(gain_db)
         _validate_frequency(frequency_hz)
 
-        # video_value is "preprocessed_<W>x<H>/<file>.mkv" - the same
-        # "value" shape app.py's detect_preprocessed_videos()/api_videos()
-        # already hand the front end, see those for where it comes from.
-        folder, _, filename = str(video_value).partition("/")
-        if not filename or not re.fullmatch(r"preprocessed_\d+x\d+", folder):
-            raise ValueError("Invalid video path")
-        folder_path = os.path.abspath(os.path.join(self.project_dir, folder))
-        source_path = os.path.abspath(os.path.join(folder_path, filename))
-        if os.path.dirname(source_path) != folder_path:
+        # video_path is an absolute path app.py already resolved and
+        # whitelisted against its own all_preprocessed_videos() (SD card,
+        # plus the USB video key when mounted - see usb_video_key.py).
+        # Re-validated here too, since this is what actually reaches the
+        # GStreamer subprocess - same defense-in-depth as
+        # start_testcard()'s testcard_dir check above.
+        source_path = os.path.abspath(str(video_path))
+        folder_path = os.path.dirname(source_path)
+        folder_name = os.path.basename(folder_path)
+        allowed_roots = {os.path.abspath(self.project_dir)}
+        usb_root = usb_video_key.mounted_root()
+        if usb_root:
+            allowed_roots.add(usb_root)
+        if (not re.fullmatch(r"preprocessed_\d+x\d+", folder_name)
+                or os.path.dirname(folder_path) not in allowed_roots):
             raise ValueError("Invalid video path")
         if not os.path.isfile(source_path):
             raise ValueError("Video not found")
@@ -257,6 +265,7 @@ class DatvEngine(object):
             "--top-banner", "1" if top_banner else "0",
             "--bottom-banner", "1" if bottom_banner else "0",
             "--marquee", "1" if marquee else "0",
+            "--marquee-text", marquee_text,
         ])
 
     def stop(self):

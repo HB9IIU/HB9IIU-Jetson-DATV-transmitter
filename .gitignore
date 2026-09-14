@@ -3,6 +3,7 @@ old_project_TO_DELETE/
 .claude/settings.local.json
 *.log
 *.pid
+overlay_settings.json
 __pycache__/
 *.pyc
 

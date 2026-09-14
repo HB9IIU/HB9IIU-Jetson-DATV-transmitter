@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="USB video key setup for the Jetson Nano DATV transmitter">
+  <title>Jetson DATV — Setup</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/datv.css') }}" rel="stylesheet">
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg sticky-top">
+    <div class="container-xxl py-2">
+      <a class="navbar-brand fs-4" href="{{ url_for('index') }}" aria-label="Jetson DATV home">JETSON <span class="text-primary">DATV</span></a>
+      <button class="navbar-toggler" type="button" disabled aria-label="Navigation (single page, no other sections yet)"><span class="navbar-toggler-icon"></span></button>
+      <div class="collapse navbar-collapse">
+        <ul class="navbar-nav ms-5 gap-lg-3">
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('index') }}">Home</a></li>
+          <li class="nav-item"><span class="nav-link active">Setup</span></li>
+          <li class="nav-item"><span class="nav-link">Status</span></li>
+          <li class="nav-item"><span class="nav-link">Settings</span></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container-xxl py-4 py-lg-5">
+    <header class="mb-4">
+      <div class="eyebrow mb-2">USB VIDEO KEY</div>
+      <h1 class="display-6 fw-bold mb-2">Add prepared videos via USB</h1>
+      <p class="text-muted-custom mb-0">Plug a USB drive into the free port. Whatever's already on it stays untouched — this only adds two folders for prepared videos.</p>
+    </header>
+
+    <section class="row g-3 g-xl-4">
+      <div class="col-12">
+        <article class="surface step-card p-3 p-lg-4">
+          <div id="usb-key-empty" class="text-muted-custom py-4 text-center d-none">No USB drive detected. Plug one into the free USB port.</div>
+          <div id="usb-key-list" class="d-flex flex-column gap-3"></div>
+        </article>
+      </div>
+    </section>
+
+    <header class="mt-5 mb-4">
+      <div class="eyebrow mb-2">OVERLAYS</div>
+      <h1 class="display-6 fw-bold mb-2">Top/bottom banner &amp; marquee</h1>
+      <p class="text-muted-custom mb-0">Applies to Camera and Video sources only - Testcard never shows any of these.</p>
+    </header>
+
+    <section class="row g-3 g-xl-4">
+      <div class="col-12">
+        <article class="surface step-card p-3 p-lg-4">
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="overlay-top-banner">
+            <label class="form-check-label" for="overlay-top-banner">Top banner</label>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="overlay-bottom-banner">
+            <label class="form-check-label" for="overlay-bottom-banner">Bottom banner</label>
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="overlay-marquee">
+            <label class="form-check-label" for="overlay-marquee">Marquee</label>
+          </div>
+          <label class="form-label fw-semibold" for="overlay-marquee-text">Marquee text</label>
+          <textarea class="form-control mb-3" id="overlay-marquee-text" rows="3"></textarea>
+          <button class="btn btn-success" id="overlay-save-button" type="button">Save</button>
+          <button class="btn btn-outline-secondary" id="overlay-restore-button" type="button">Restore default message</button>
+          <span class="small text-muted-custom ms-2" id="overlay-save-message"></span>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="container-xxl pb-4 small text-center">JETSON DATV · USB video key setup</footer>
+  <script src="{{ url_for('static', filename='js/setup.js') }}" defer></script>
+</body>
+</html>

@@ -17,6 +17,9 @@ from camera_preview import stop_active_preview, stream_camera
 from datv_engine import DatvEngine
 from dvbs2_profiles import CAMERA_VIDEO_PROFILE_NAMES, PROFILES
 from pluto_fft_bridge import get_latest_frame, start_background_reader
+import overlay_settings
+import usb_video_key
+import video_conversion
 
 # The web GUI polls /api/stream/status and /api/telemetry every 1-2s, which
 # floods the terminal with a request-log line each time under werkzeug's
@@ -217,6 +220,9 @@ def set_pluto_rx_fft(enabled, frequency_hz=None):
 
 _start_pluto_telemetry()
 start_background_reader()
+usb_video_key.init(PROJECT_DIR)
+overlay_settings.init(PROJECT_DIR)
+video_conversion.init(lambda: STREAM_ENGINE.status().get("state") not in ("stopped", "error"))
 
 
 def detect_video_devices():
@@ -318,44 +324,73 @@ def video_folder_for_sr_fec(symbol_rate, fec):
     return "preprocessed_{}x{}".format(width, height)
 
 
-def detect_preprocessed_videos(folder):
+def _preprocessed_roots():
+    """(root_dir, value_prefix) pairs to search for prepared videos - the
+    SD card (PROJECT_DIR, always) and the USB video key's mount, only
+    while one is actually recognised and mounted (see
+    usb_video_key.mounted_root()). value_prefix distinguishes which root a
+    given video's "value" came from, so video_thumbnail()/stream_start()
+    can resolve it straight back to a real path (via the "root_dir" field
+    detect_preprocessed_videos() attaches to each item) without having to
+    re-derive or re-scan anything from the value string itself.
+    """
+    roots = [(PROJECT_DIR, "")]
+    usb_root = usb_video_key.mounted_root()
+    if usb_root:
+        roots.append((usb_root, "usb:"))
+    return roots
+
+
+def detect_preprocessed_videos(folder, root_dir=PROJECT_DIR, value_prefix=""):
     videos = []
-    folder_path = os.path.join(PROJECT_DIR, folder)
+    folder_path = os.path.join(root_dir, folder)
     if os.path.isdir(folder_path):
         for name in sorted(os.listdir(folder_path)):
-            if name.lower().endswith(".mkv"):
+            # "._filename.mkv" is a macOS AppleDouble sidecar file, written
+            # automatically by Finder whenever it copies onto a non-HFS+
+            # drive (the USB video key's FAT32/exFAT) - not a real video,
+            # just metadata junk that happens to also end in .mkv.
+            if name.lower().endswith(".mkv") and not name.startswith("._"):
                 videos.append({
+                    "root_dir": root_dir,
                     "folder": folder,
                     "file": name,
-                    "value": "{}/{}".format(folder, name),
+                    "value": "{}{}/{}".format(value_prefix, folder, name),
                     "label": os.path.splitext(name)[0].replace("_", " ").title(),
                 })
     return videos
 
 
 def all_preprocessed_videos():
-    """Every prepared video across every preprocessed_<W>x<H>/ folder that
-    exists on disk, regardless of which SR/FEC currently maps to that
-    resolution - used to validate a requested video (thumbnail or stream
-    start) by whitelist, the same pattern testcard_preview() already uses,
-    without needing to already know the request's SR/FEC.
+    """Every prepared video across every preprocessed_<W>x<H>/ folder on
+    every currently available root (SD card, plus the USB video key when
+    mounted - see _preprocessed_roots()), regardless of which SR/FEC
+    currently maps to that resolution - used to validate a requested video
+    (thumbnail or stream start) by whitelist, the same pattern
+    testcard_preview() already uses, without needing to already know the
+    request's SR/FEC.
     """
     videos = []
-    for name in sorted(os.listdir(PROJECT_DIR)):
-        if re.fullmatch(r"preprocessed_\d+x\d+", name):
-            videos += detect_preprocessed_videos(name)
+    for root_dir, value_prefix in _preprocessed_roots():
+        for name in sorted(os.listdir(root_dir)):
+            if re.fullmatch(r"preprocessed_\d+x\d+", name):
+                videos += detect_preprocessed_videos(name, root_dir, value_prefix)
     return videos
 
 
 @app.route("/")
 def index():
     default_video_folder = video_folder_for_sr_fec(DEFAULT_SYMBOL_RATE, DEFAULT_FEC)
+    prepared_videos = []
+    if default_video_folder:
+        for root_dir, value_prefix in _preprocessed_roots():
+            prepared_videos += detect_preprocessed_videos(default_video_folder, root_dir, value_prefix)
     return render_template(
         "index.html",
         video_devices=detect_video_devices(),
         audio_devices=detect_audio_inputs(),
         testcards=detect_testcards(),
-        prepared_videos=detect_preprocessed_videos(default_video_folder) if default_video_folder else [],
+        prepared_videos=prepared_videos,
     )
 
 
@@ -375,15 +410,65 @@ def api_videos():
     folder = video_folder_for_sr_fec(symbol_rate, fec)
     if folder is None:
         return jsonify({"error": "Unsupported SR/FEC combination"}), 400
-    videos = [
-        {
-            "value": video["value"],
-            "label": video["label"],
-            "preview_url": url_for("video_thumbnail", video=video["value"]),
-        }
-        for video in detect_preprocessed_videos(folder)
-    ]
+    videos = []
+    for root_dir, value_prefix in _preprocessed_roots():
+        videos += [
+            {
+                "value": video["value"],
+                "label": video["label"],
+                "preview_url": url_for("video_thumbnail", video=video["value"]),
+            }
+            for video in detect_preprocessed_videos(folder, root_dir, value_prefix)
+        ]
     return jsonify({"videos": videos})
+
+
+@app.route("/setup")
+def setup():
+    return render_template("setup.html")
+
+
+@app.route("/api/usb-key/candidates")
+def usb_key_candidates():
+    """Polled by the Setup page to list whatever USB drive(s) are
+    currently plugged in - see usb_video_key.py for what each entry
+    means (mounted_at is None if the OS hasn't auto-mounted it yet)."""
+    return jsonify({"candidates": usb_video_key.list_candidates()})
+
+
+@app.route("/api/usb-key/select", methods=["POST"])
+def usb_key_select():
+    data = request.get_json(silent=True) or {}
+    serial = data.get("serial")
+    if not serial:
+        return jsonify({"error": "Missing serial"}), 400
+    ok, error = usb_video_key.select(serial)
+    if not ok:
+        return jsonify({"error": error}), 409
+    return jsonify({"candidates": usb_video_key.list_candidates()})
+
+
+@app.route("/api/overlay-settings")
+def overlay_settings_get():
+    """Current top/bottom banner + marquee on/off and marquee text, for the
+    Setup page to populate its form with on load. default_marquee_text is
+    included so the Setup page can show real text in the marquee box even
+    when marquee_text is "" (no override saved), instead of a blank field."""
+    settings = overlay_settings.load()
+    settings["default_marquee_text"] = overlay_settings.default_marquee_text()
+    return jsonify(settings)
+
+
+@app.route("/api/overlay-settings", methods=["POST"])
+def overlay_settings_post():
+    data = request.get_json(silent=True) or {}
+    saved = overlay_settings.save(
+        data.get("top_banner", True),
+        data.get("bottom_banner", True),
+        data.get("marquee", True),
+        data.get("marquee_text", ""),
+    )
+    return jsonify(saved)
 
 
 @app.route("/api/stream/status")
@@ -430,13 +515,14 @@ def stream_start():
         # value set by static/js/batc-spectrum.js's green-slot click
         # handler) - convert to whole Hz for the rest of the stack.
         frequency_hz = round(float(data.get("frequency")) * 1e6)
-        # Banner/marquee toggles default on - matches ask_yes_no()'s own
-        # [Y/n] default in datv_tx_plus.py's interactive prompt, which this
-        # replaces for a web-started stream. No dedicated UI control for
-        # these yet; add one later if/when that's wanted.
-        top_banner = bool(data.get("top_banner", True))
-        bottom_banner = bool(data.get("bottom_banner", True))
-        marquee = bool(data.get("marquee", True))
+        # Banner/marquee on/off + marquee text come from the Setup page
+        # (overlay_settings.py), not this request body - camera/video are
+        # the only sources that use them (testcard never asks).
+        overlay = overlay_settings.load()
+        top_banner = overlay["top_banner"]
+        bottom_banner = overlay["bottom_banner"]
+        marquee = overlay["marquee"]
+        marquee_text = overlay["marquee_text"]
 
         if source == "testcard":
             testcard = data.get("testcard", "")
@@ -449,11 +535,21 @@ def stream_start():
             audio_device = data.get("audio_device", "")
             status_data = STREAM_ENGINE.start_camera(
                 camera_device, is_csi_camera(camera_device), audio_device,
-                symbol_rate, fec, gain_db, frequency_hz, top_banner, bottom_banner, marquee)
+                symbol_rate, fec, gain_db, frequency_hz, top_banner, bottom_banner, marquee,
+                marquee_text)
         elif source == "video":
+            requested_video = data.get("video", "")
+            selected_video = next(
+                (item for item in all_preprocessed_videos() if item["value"] == requested_video),
+                None,
+            )
+            if selected_video is None:
+                return jsonify({"error": "Select a valid video"}), 400
+            video_path = os.path.join(
+                selected_video["root_dir"], selected_video["folder"], selected_video["file"])
             status_data = STREAM_ENGINE.start_video(
-                data.get("video", ""), symbol_rate, fec, gain_db, frequency_hz,
-                top_banner, bottom_banner, marquee)
+                video_path, symbol_rate, fec, gain_db, frequency_hz,
+                top_banner, bottom_banner, marquee, marquee_text)
         else:
             return jsonify({"error": "Unknown source"}), 400
     except (ValueError, TypeError) as exc:
@@ -561,7 +657,7 @@ def video_thumbnail():
     if not ffmpeg:
         abort(503)
 
-    video_path = os.path.join(PROJECT_DIR, selected["folder"], selected["file"])
+    video_path = os.path.join(selected["root_dir"], selected["folder"], selected["file"])
     try:
         result = subprocess.run(
             [

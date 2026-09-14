@@ -199,6 +199,14 @@ FREQUENCY_HZ = 2405000000
 # real hardware rather than trusted either way).
 GAIN_DB = -24
 
+# Web-only override for MARQUEE_TEXT (camera_banner_marquee.yaml's
+# marquee.text / video_banner_marquee.yaml's per-video text) - None means
+# "use whichever YAML text the config loader picked". Set by
+# datv_web_worker.py from the Setup page's saved overlay settings
+# (overlay_settings.py on the Flask side); left None for direct/interactive
+# runs of this script, which always just use the YAML text as-is.
+MARQUEE_TEXT_OVERRIDE = None
+
 # When SOURCE == "testcard": testcard mode never uses the title/bars/clock/
 # telemetry overlay system above (see main() - top_bar_enabled/
 # bottom_bar_enabled are forced False, no prompt) - a still test-card
@@ -1006,6 +1014,16 @@ def build_pipeline_description(ip, profile, source_path=None,
         MARQUEE_COLOR_RGBA = video_banner_marquee["marquee_color_rgba"]
         MARQUEE_BG_RGBA = video_banner_marquee["marquee_bg_rgba"]
         MARQUEE_STYLES = video_banner_marquee["marquee_styles"]
+    if MARQUEE_TEXT_OVERRIDE:
+        # Applies after the video branch above (which would otherwise be
+        # the last writer) and covers camera too, even though camera never
+        # enters that branch: a `global MARQUEE_TEXT` statement anywhere in
+        # a function makes the name global for the whole function body,
+        # regardless of which branch actually runs, so this assignment
+        # writes the module-level MARQUEE_TEXT either way. draw_marquee()
+        # only ever reads that global at render time, so overwriting it
+        # here, once, before Gst.parse_launch() is enough for either SOURCE.
+        MARQUEE_TEXT = MARQUEE_TEXT_OVERRIDE
     if (width, height) not in OVERLAY_STYLES:
         raise SystemExit(
             "No OVERLAY_STYLES entry for {}x{} - add one (see the comment "

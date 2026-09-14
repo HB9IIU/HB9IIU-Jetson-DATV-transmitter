@@ -175,6 +175,12 @@ async function refreshPreparedVideos() {
 symbolRateSelect?.addEventListener('change', refreshPreparedVideos);
 fecSelect?.addEventListener('change', refreshPreparedVideos);
 
+// USB video keys are managed on their own page now (see setup.html /
+// static/js/setup.js) - the prepared-videos list here is already always
+// fresh (both the server-rendered initial list and refreshPreparedVideos()
+// re-scan SD card + USB key on every call, see app.py's
+// _preprocessed_roots()), so there's nothing to poll or react to here.
+
 const txGain = document.querySelector('#tx-gain');
 const txGainValue = document.querySelector('#tx-gain-value');
 function updateTxGain() {

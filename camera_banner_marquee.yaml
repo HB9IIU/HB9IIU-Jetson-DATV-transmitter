@@ -43,11 +43,14 @@ marquee:
   # based on video timestamps, not a Python-side polling tick, so it stays
   # smooth regardless of text length.
   text: >-
-    JETSON NANO DATV LIVE TRANSMISSION — This deliberately long demonstration
-    message travels completely into and out of the picture, even though its
-    rendered width is more than twice the width of a 960 pixel video frame —
-    QO-100 DIGITAL AMATEUR TELEVISION FROM HB9IIU — KEEP EXPERIMENTING, KEEP
-    LEARNING, AND ENJOY THE SIGNAL!
+    HB9IIU QO-100 DATV — this signal comes from a Jetson Nano 2GB bought back
+    in 2021 that sat unused for years, never quite working — brought back to
+    life as an H.265 hardware encoder feeding a PlutoSDR, driven up through
+    an Analog Devices CN0417 pre-amp into a final power amplifier, injecting
+    about 120 watts into a helix feed illuminating a 110cm dish — proof that
+    old hardware still has a second life — visit github.com/HB9IIU for a
+    ready-to-run SD card image, with a dead-simple three-step web interface
+    to get you on air — 73!
   font_family: "Sans"
   # [r, g, b, a], each 0.0-1.0 - Cairo's native color format (unlike
   # testcard_overlays.yaml's 0xAARRGGBB integers: marquee text is drawn via
@@ -56,9 +59,9 @@ marquee:
   # Semi-transparent backing band behind the text, full frame width (so it
   # doesn't jump around with the text's own changing width/position) - set
   # to null for no background at all, plain text over the picture.
-  bg_rgba: [0.0, 0.0, 0.0, 0.45]
+  bg_rgba: [0.0, 0.0, 0.0, 0.75]
   # y_px = vertical position from the top of the frame. speed_px_per_second
   # and font_size/padding all scale with resolution.
-  640x360:  {y_px: 0, font_size: 13, speed_px_per_second: 33.0,  bg_padding_top_px: 4, bg_padding_bottom_px: 3}
-  960x540:  {y_px: 8, font_size: 20, speed_px_per_second: 150.0, bg_padding_top_px: 6, bg_padding_bottom_px: 4}
-  1280x720: {y_px: 4, font_size: 27, speed_px_per_second: 67.0,  bg_padding_top_px: 8, bg_padding_bottom_px: 5}
+  640x360:  {y_px: 0, font_size: 13, speed_px_per_second: 30.0, bg_padding_top_px: 4, bg_padding_bottom_px: 3}
+  960x540:  {y_px: 8, font_size: 20, speed_px_per_second: 30.0, bg_padding_top_px: 6, bg_padding_bottom_px: 4}
+  1280x720: {y_px: 4, font_size: 27, speed_px_per_second: 30.0, bg_padding_top_px: 8, bg_padding_bottom_px: 5}
