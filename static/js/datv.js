@@ -381,7 +381,7 @@ copyLogButton?.addEventListener('click', async () => {
     copyLogButton.textContent = 'Copied!';
     window.setTimeout(() => { copyLogButton.textContent = originalLabel; }, 1500);
   } catch (_error) {
-    window.alert('Could not copy to clipboard - your browser may be blocking clipboard access on this connection (clipboard access usually requires HTTPS or localhost).');
+    showAppAlert('Could not copy to clipboard - your browser may be blocking clipboard access on this connection (clipboard access usually requires HTTPS or localhost).');
   }
 });
 
@@ -446,7 +446,7 @@ streamToggle?.addEventListener('click', async () => {
       response = await fetch('/api/stream/stop', { method: 'POST' });
     } else {
       if (!frequencyInput.value) {
-        window.alert('Select a frequency first (click a green slot on the BATC spectrum).');
+        showAppAlert('Select a frequency first (click a green slot on the BATC spectrum).');
         streamToggle.disabled = false;
         return;
       }
@@ -466,7 +466,7 @@ streamToggle?.addEventListener('click', async () => {
       } else if (source === 'video') {
         body.video = videoSelect.value;
       } else {
-        window.alert('Select a source first.');
+        showAppAlert('Select a source first.');
         streamToggle.disabled = false;
         return;
       }
@@ -480,7 +480,7 @@ streamToggle?.addEventListener('click', async () => {
     if (!response.ok) throw new Error(result.error || 'Stream action failed');
     renderStreamButton(result);
   } catch (error) {
-    window.alert(error.message);
+    showAppAlert(error.message);
     await fetchStreamStatus();
   }
 });

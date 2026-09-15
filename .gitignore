@@ -4,6 +4,7 @@ old_project_TO_DELETE/
 *.log
 *.pid
 overlay_settings.json
+pluto_callsign.json
 __pycache__/
 *.pyc
 

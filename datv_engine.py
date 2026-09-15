@@ -180,7 +180,7 @@ class DatvEngine(object):
             self._state = "streaming"
             return self._status_unlocked()
 
-    def start_testcard(self, testcard_name, symbol_rate, fec, gain_db, frequency_hz):
+    def start_testcard(self, testcard_name, symbol_rate, fec, gain_db, frequency_hz, callsign):
         try:
             profile_key = TESTCARD_PROFILE_NAMES[(symbol_rate, fec)]
         except KeyError:
@@ -201,10 +201,12 @@ class DatvEngine(object):
             "--profile", profile_key,
             "--gain", str(gain_db),
             "--frequency", str(frequency_hz),
+            "--callsign", callsign,
         ])
 
     def start_camera(self, camera_device, camera_is_csi, audio_device, symbol_rate, fec,
-                      gain_db, frequency_hz, top_banner, bottom_banner, marquee, marquee_text):
+                      gain_db, frequency_hz, top_banner, top_banner_text, bottom_banner,
+                      marquee, marquee_text, callsign):
         try:
             profile_key = CAMERA_VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
         except KeyError:
@@ -223,13 +225,16 @@ class DatvEngine(object):
             "--camera-is-csi", "1" if camera_is_csi else "0",
             "--audio-device", audio_device,
             "--top-banner", "1" if top_banner else "0",
+            "--top-banner-text", top_banner_text,
             "--bottom-banner", "1" if bottom_banner else "0",
             "--marquee", "1" if marquee else "0",
             "--marquee-text", marquee_text,
+            "--callsign", callsign,
         ])
 
     def start_video(self, video_path, symbol_rate, fec, gain_db, frequency_hz,
-                     top_banner, bottom_banner, marquee, marquee_text):
+                     top_banner, top_banner_text, bottom_banner, marquee, marquee_text,
+                     callsign):
         try:
             profile_key = CAMERA_VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
         except KeyError:
@@ -263,9 +268,11 @@ class DatvEngine(object):
             "--frequency", str(frequency_hz),
             "--video", source_path,
             "--top-banner", "1" if top_banner else "0",
+            "--top-banner-text", top_banner_text,
             "--bottom-banner", "1" if bottom_banner else "0",
             "--marquee", "1" if marquee else "0",
             "--marquee-text", marquee_text,
+            "--callsign", callsign,
         ])
 
     def stop(self):

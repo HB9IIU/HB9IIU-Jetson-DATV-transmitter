@@ -17,8 +17,6 @@
         <ul class="navbar-nav ms-5 gap-lg-3">
           <li class="nav-item"><a class="nav-link" href="{{ url_for('index') }}">Home</a></li>
           <li class="nav-item"><span class="nav-link active">Setup</span></li>
-          <li class="nav-item"><span class="nav-link">Status</span></li>
-          <li class="nav-item"><span class="nav-link">Settings</span></li>
         </ul>
       </div>
     </div>
@@ -26,16 +24,21 @@
 
   <main class="container-xxl py-4 py-lg-5">
     <header class="mb-4">
-      <div class="eyebrow mb-2">USB VIDEO KEY</div>
-      <h1 class="display-6 fw-bold mb-2">Add prepared videos via USB</h1>
-      <p class="text-muted-custom mb-0">Plug a USB drive into the free port. Whatever's already on it stays untouched — this only adds two folders for prepared videos.</p>
+      <div class="eyebrow mb-2">PLUTO</div>
+      <h1 class="display-6 fw-bold mb-2">Callsign</h1>
+      <p class="text-muted-custom mb-0">Used to build every MQTT topic between this app and the Pluto. Applying a new one pushes it to the Pluto and reboots it - both sides must agree or streaming fails.</p>
     </header>
 
     <section class="row g-3 g-xl-4">
       <div class="col-12">
         <article class="surface step-card p-3 p-lg-4">
-          <div id="usb-key-empty" class="text-muted-custom py-4 text-center d-none">No USB drive detected. Plug one into the free USB port.</div>
-          <div id="usb-key-list" class="d-flex flex-column gap-3"></div>
+          <p class="mb-3">Current: <span class="fw-semibold" id="callsign-current">—</span></p>
+          <label class="form-label fw-semibold" for="callsign-input">New callsign</label>
+          <div class="d-flex gap-2 flex-wrap align-items-start">
+            <input type="text" class="form-control" id="callsign-input" style="max-width: 220px" maxlength="10" placeholder="e.g. HB9IIU">
+            <button class="btn btn-warning" id="callsign-apply-button" type="button">Apply &amp; Reboot Pluto</button>
+          </div>
+          <span class="small text-muted-custom d-block mt-2" id="callsign-message"></span>
         </article>
       </div>
     </section>
@@ -53,25 +56,57 @@
             <input class="form-check-input" type="checkbox" role="switch" id="overlay-top-banner">
             <label class="form-check-label" for="overlay-top-banner">Top banner</label>
           </div>
-          <div class="form-check form-switch mb-3">
-            <input class="form-check-input" type="checkbox" role="switch" id="overlay-bottom-banner">
-            <label class="form-check-label" for="overlay-bottom-banner">Bottom banner</label>
-          </div>
+          <label class="form-label fw-semibold" for="overlay-top-banner-text">Top banner text</label>
+          <textarea class="form-control mb-2" id="overlay-top-banner-text" rows="2"></textarea>
+          <button class="btn btn-outline-secondary btn-sm mb-4" id="overlay-top-banner-restore-button" type="button">Restore default title</button>
+
           <div class="form-check form-switch mb-3">
             <input class="form-check-input" type="checkbox" role="switch" id="overlay-marquee">
             <label class="form-check-label" for="overlay-marquee">Marquee</label>
           </div>
           <label class="form-label fw-semibold" for="overlay-marquee-text">Marquee text</label>
-          <textarea class="form-control mb-3" id="overlay-marquee-text" rows="3"></textarea>
+          <textarea class="form-control mb-2" id="overlay-marquee-text" rows="3"></textarea>
+          <button class="btn btn-outline-secondary btn-sm mb-4" id="overlay-restore-button" type="button">Restore default message</button>
+
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="overlay-bottom-banner">
+            <label class="form-check-label" for="overlay-bottom-banner">Bottom banner</label>
+          </div>
+          <p class="small text-muted-custom mb-3">Always shows the live callsign/clock/telemetry overlay - no custom text.</p>
+
           <button class="btn btn-success" id="overlay-save-button" type="button">Save</button>
-          <button class="btn btn-outline-secondary" id="overlay-restore-button" type="button">Restore default message</button>
           <span class="small text-muted-custom ms-2" id="overlay-save-message"></span>
+        </article>
+      </div>
+    </section>
+
+    <header class="mt-5 mb-4">
+      <div class="eyebrow mb-2">USB VIDEO KEY</div>
+      <h1 class="display-6 fw-bold mb-2">Add prepared videos via USB</h1>
+      <p class="text-muted-custom mb-0">Plug a USB drive into the free port. Whatever's already on it stays untouched — this only adds two folders for prepared videos.</p>
+    </header>
+
+    <section class="row g-3 g-xl-4">
+      <div class="col-12">
+        <article class="surface step-card p-3 p-lg-4">
+          <div id="usb-key-empty" class="text-muted-custom py-4 text-center d-none">No USB drive detected. Plug one into the free USB port.</div>
+          <div id="usb-key-list" class="d-flex flex-column gap-3"></div>
         </article>
       </div>
     </section>
   </main>
 
+  <div id="callsign-reboot-overlay" class="position-fixed top-0 start-0 w-100 h-100 d-none align-items-center justify-content-center" style="background: rgba(0,0,0,0.75); z-index: 1050;">
+    <div class="surface p-4 p-lg-5 text-center" style="max-width: 360px;">
+      <div class="spinner-border text-primary mb-3" role="status" id="callsign-reboot-spinner"></div>
+      <div class="fw-semibold" id="callsign-reboot-status">Rebooting Pluto…</div>
+      <div class="small text-muted-custom mt-2" id="callsign-reboot-detail">Waiting for it to come back online.</div>
+      <button class="btn btn-success mt-3 d-none" id="callsign-reboot-close" type="button">Close</button>
+    </div>
+  </div>
+
   <footer class="container-xxl pb-4 small text-center">JETSON DATV · USB video key setup</footer>
+  <script src="{{ url_for('static', filename='js/app-alert.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/setup.js') }}" defer></script>
 </body>
 </html>

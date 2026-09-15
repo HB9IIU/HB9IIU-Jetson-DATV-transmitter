@@ -18,8 +18,8 @@ from datv_engine import DatvEngine
 from dvbs2_profiles import CAMERA_VIDEO_PROFILE_NAMES, PROFILES
 from pluto_fft_bridge import get_latest_frame, start_background_reader
 import overlay_settings
+import pluto_callsign
 import usb_video_key
-import video_conversion
 
 # The web GUI polls /api/stream/status and /api/telemetry every 1-2s, which
 # floods the terminal with a request-log line each time under werkzeug's
@@ -39,7 +39,22 @@ DEFAULT_SYMBOL_RATE = 333
 DEFAULT_FEC = "3/4"
 PLUTO_IP = "192.168.2.1"
 PLUTO_MQTT_PORT = 1883
-PLUTO_CALLSIGN = "HB9IIU"
+pluto_callsign.init(PROJECT_DIR)
+# Loaded from pluto_callsign.json (falls back to pluto_callsign.DEFAULT_CALLSIGN
+# on first run) rather than a hardcoded literal, so a callsign set via the
+# Setup page's /api/pluto/callsign survives an app.py restart - see
+# pluto_callsign.py. The Pluto's own firmware stores its side of this
+# independently (U-Boot env, via fw_setenv/fw_printenv) - the two only
+# agree when /api/pluto/callsign has actually been used to push this value
+# to the Pluto too (see stream_start()'s "did not acknowledge" failure mode
+# when they drift apart).
+PLUTO_CALLSIGN = pluto_callsign.load()
+# Deliberately conservative (uppercase letters/digits only, no "/" portable
+# suffixes) - this value flows straight into an MQTT topic segment here and
+# into `fw_setenv call $param` on the Pluto's own firmware side (see
+# mqtt_setcall.sh in the firmware source), so it's worth keeping simple/safe
+# rather than accepting the full range of real-world callsign formats.
+PLUTO_CALLSIGN_RE = re.compile(r"^[A-Z0-9]{3,10}$")
 # Fallback only, used before any stream has been started - the RX WebFFT is
 # centred on our own real, live TX frequency (CURRENT_TX_FREQUENCY_HZ,
 # set by stream_start()) to visually confirm real RF is going out (see
@@ -222,7 +237,6 @@ _start_pluto_telemetry()
 start_background_reader()
 usb_video_key.init(PROJECT_DIR)
 overlay_settings.init(PROJECT_DIR)
-video_conversion.init(lambda: STREAM_ENGINE.status().get("state") not in ("stopped", "error"))
 
 
 def detect_video_devices():
@@ -450,11 +464,13 @@ def usb_key_select():
 
 @app.route("/api/overlay-settings")
 def overlay_settings_get():
-    """Current top/bottom banner + marquee on/off and marquee text, for the
-    Setup page to populate its form with on load. default_marquee_text is
-    included so the Setup page can show real text in the marquee box even
-    when marquee_text is "" (no override saved), instead of a blank field."""
+    """Current top/bottom banner + marquee on/off and top banner/marquee
+    text, for the Setup page to populate its form with on load.
+    default_top_banner_text/default_marquee_text are included so the Setup
+    page can show real text in those boxes even when the saved override is
+    "" (no override saved), instead of a blank field."""
     settings = overlay_settings.load()
+    settings["default_top_banner_text"] = overlay_settings.default_top_banner_text()
     settings["default_marquee_text"] = overlay_settings.default_marquee_text()
     return jsonify(settings)
 
@@ -464,6 +480,7 @@ def overlay_settings_post():
     data = request.get_json(silent=True) or {}
     saved = overlay_settings.save(
         data.get("top_banner", True),
+        data.get("top_banner_text", ""),
         data.get("bottom_banner", True),
         data.get("marquee", True),
         data.get("marquee_text", ""),
@@ -520,6 +537,7 @@ def stream_start():
         # the only sources that use them (testcard never asks).
         overlay = overlay_settings.load()
         top_banner = overlay["top_banner"]
+        top_banner_text = overlay["top_banner_text"]
         bottom_banner = overlay["bottom_banner"]
         marquee = overlay["marquee"]
         marquee_text = overlay["marquee_text"]
@@ -529,14 +547,14 @@ def stream_start():
             if testcard not in {item["value"] for item in detect_testcards()}:
                 return jsonify({"error": "Select a valid testcard"}), 400
             status_data = STREAM_ENGINE.start_testcard(
-                testcard, symbol_rate, fec, gain_db, frequency_hz)
+                testcard, symbol_rate, fec, gain_db, frequency_hz, PLUTO_CALLSIGN)
         elif source == "camera":
             camera_device = data.get("camera_device", "")
             audio_device = data.get("audio_device", "")
             status_data = STREAM_ENGINE.start_camera(
                 camera_device, is_csi_camera(camera_device), audio_device,
-                symbol_rate, fec, gain_db, frequency_hz, top_banner, bottom_banner, marquee,
-                marquee_text)
+                symbol_rate, fec, gain_db, frequency_hz, top_banner, top_banner_text,
+                bottom_banner, marquee, marquee_text, PLUTO_CALLSIGN)
         elif source == "video":
             requested_video = data.get("video", "")
             selected_video = next(
@@ -549,7 +567,7 @@ def stream_start():
                 selected_video["root_dir"], selected_video["folder"], selected_video["file"])
             status_data = STREAM_ENGINE.start_video(
                 video_path, symbol_rate, fec, gain_db, frequency_hz,
-                top_banner, bottom_banner, marquee, marquee_text)
+                top_banner, top_banner_text, bottom_banner, marquee, marquee_text, PLUTO_CALLSIGN)
         else:
             return jsonify({"error": "Unknown source"}), 400
     except (ValueError, TypeError) as exc:
@@ -600,6 +618,46 @@ def set_gain():
     payload = format_gain_db(gain_db)
     PLUTO_MQTT_CLIENT.publish(topic, payload=payload, qos=1)
     return jsonify({"gain_db": payload})
+
+
+@app.route("/api/pluto/callsign")
+def pluto_callsign_get():
+    return jsonify({"callsign": PLUTO_CALLSIGN})
+
+
+@app.route("/api/pluto/callsign", methods=["POST"])
+def pluto_callsign_set():
+    """Pushes a new callsign to the Pluto and switches every MQTT topic/
+    stream-start this process itself uses over to it too.
+
+    cmd/pluto/call is the one topic the firmware's mqtt_setcall.sh listens
+    on unprefixed (see the firmware source) - receiving anything there
+    makes it fw_setenv the new value into its U-Boot env and reboot itself
+    immediately, regardless of what it had stored before. The Setup page
+    shows a "rebooting" spinner and polls /api/telemetry's pluto_connected
+    until fresh telemetry arrives again under the new prefix.
+    """
+    global PLUTO_CALLSIGN
+    if PLUTO_MQTT_CLIENT is None:
+        return jsonify({"error": "MQTT not available"}), 503
+    data = request.get_json(silent=True) or {}
+    new_callsign = str(data.get("callsign", "")).strip().upper()
+    if not PLUTO_CALLSIGN_RE.match(new_callsign):
+        return jsonify({"error": "Callsign must be 3-10 letters/digits"}), 400
+
+    old_callsign = PLUTO_CALLSIGN
+    PLUTO_MQTT_CLIENT.publish("cmd/pluto/call", payload=new_callsign, qos=1)
+    if new_callsign != old_callsign:
+        PLUTO_MQTT_CLIENT.unsubscribe("dt/pluto/{}/#".format(old_callsign))
+        PLUTO_MQTT_CLIENT.subscribe("dt/pluto/{}/#".format(new_callsign), qos=1)
+    PLUTO_CALLSIGN = new_callsign
+    pluto_callsign.save(new_callsign)
+    # Force pluto_connected (see telemetry() below) false until real
+    # telemetry arrives under the new prefix - without this, the still-
+    # under-10s-old last_message from just before the switch would read as
+    # "connected" for a few seconds even though the Pluto is rebooting.
+    PLUTO_STATE["last_message"] = 0.0
+    return jsonify({"callsign": PLUTO_CALLSIGN})
 
 
 @app.route("/api/telemetry")

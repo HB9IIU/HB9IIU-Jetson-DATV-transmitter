@@ -1,0 +1,6 @@
+{
+  "host": "0.0.0.0",
+  "port": 8088,
+  "max_upload_bytes": 8589934592,
+  "job_timeout_hours": 24
+}

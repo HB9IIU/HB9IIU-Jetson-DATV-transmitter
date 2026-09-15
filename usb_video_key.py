@@ -184,6 +184,19 @@ def list_candidates():
             continue
 
         serial = _device_serial(disk_node)
+        # Real free-space from the live filesystem (shutil.disk_usage), not
+        # lsblk's "size" (the raw partition/disk capacity, ignoring
+        # filesystem overhead and what's actually stored on it) - only
+        # available once mounted, so the Setup page's gauge just doesn't
+        # show until then.
+        total_bytes = free_bytes = None
+        if mountpoint:
+            try:
+                usage = shutil.disk_usage(mountpoint)
+                total_bytes, free_bytes = usage.total, usage.free
+            except OSError:
+                pass
+
         candidates.append({
             "serial": serial,
             "device": device_node,
@@ -191,6 +204,8 @@ def list_candidates():
             "fstype": fstype,
             "size": entry.get("size"),
             "mounted_at": mountpoint,
+            "total_bytes": total_bytes,
+            "free_bytes": free_bytes,
             "confirmed": bool(serial) and registry.get(serial) == "confirmed",
         })
     return candidates

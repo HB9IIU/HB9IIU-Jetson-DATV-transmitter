@@ -37,6 +37,11 @@ def main():
     parser.add_argument("--profile", required=True, choices=sorted(tx.PROFILES))
     parser.add_argument("--gain", required=True, type=float)
     parser.add_argument("--frequency", required=True, type=int)
+    # Sourced from app.py's own PLUTO_CALLSIGN global, so the web MQTT
+    # client (app.py) and this worker's own MQTT client (datv_tx_plus.py)
+    # always agree on the topic prefix - datv_tx_plus.py's own CALLSIGN
+    # default only applies to a direct/interactive run of that script.
+    parser.add_argument("--callsign", required=True)
     # testcard mode never uses these three (ask_banner_and_marquee_settings
     # is never called for it - see datv_tx_plus.py's main()), so they're
     # harmless no-ops there and just need a default rather than being
@@ -45,7 +50,9 @@ def main():
     parser.add_argument("--bottom-banner", type=_bool_arg, default=True)
     parser.add_argument("--marquee", type=_bool_arg, default=True)
     # Empty string (the default) means "no override" - datv_tx_plus.py's own
-    # YAML-loaded MARQUEE_TEXT is left alone. See MARQUEE_TEXT_OVERRIDE there.
+    # YAML-loaded TITLE_TEXT/MARQUEE_TEXT is left alone. See
+    # TITLE_TEXT_OVERRIDE/MARQUEE_TEXT_OVERRIDE there.
+    parser.add_argument("--top-banner-text", default="")
     parser.add_argument("--marquee-text", default="")
     # Only one of these three is actually required, depending on --source -
     # validated below instead of via argparse's required= (which can't
@@ -69,8 +76,11 @@ def main():
     _patch("FREQUENCY_HZ", args.frequency)
     _patch("SOURCE", args.source)
     _patch("TX_OUTPUT", "pluto")
+    _patch("CALLSIGN", args.callsign)
     _patch("ask_banner_and_marquee_settings",
            lambda: (args.top_banner, args.bottom_banner, args.marquee))
+    if args.top_banner_text:
+        _patch("TITLE_TEXT_OVERRIDE", args.top_banner_text)
     if args.marquee_text:
         _patch("MARQUEE_TEXT_OVERRIDE", args.marquee_text)
 

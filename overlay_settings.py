@@ -1,12 +1,15 @@
-"""Top/bottom banner + marquee on/off, and marquee text, set from the web
-UI's Setup page and remembered across restarts - same small-JSON-file
-pattern as usb_video_key.py's registry, one level simpler (no hardware
-detection here, just read/write).
+"""Top/bottom banner + marquee on/off, and top banner/marquee text, set
+from the web UI's Setup page and remembered across restarts - same small-
+JSON-file pattern as usb_video_key.py's registry, one level simpler (no
+hardware detection here, just read/write).
 
 Only meaningful for SOURCE in ("camera", "video") - see datv_engine.py's
 start_camera()/start_video() (the only callers of load()) and
-datv_tx_plus.py's MARQUEE_TEXT_OVERRIDE for how these reach the actual
-GStreamer worker. Testcard mode never asks for any of this.
+datv_tx_plus.py's TITLE_TEXT_OVERRIDE/MARQUEE_TEXT_OVERRIDE for how these
+reach the actual GStreamer worker. Testcard mode never asks for any of
+this. bottom_banner has no text of its own to override - it's always the
+live callsign/clock/telemetry overlay, see camera_banner_marquee.yaml's
+bottom_banner comment.
 """
 
 import json
@@ -22,6 +25,7 @@ SETTINGS_FILENAME = "overlay_settings.json"
 CAMERA_BANNER_MARQUEE_YAML = "camera_banner_marquee.yaml"
 DEFAULTS = {
     "top_banner": True,
+    "top_banner_text": "",
     "bottom_banner": True,
     "marquee": True,
     "marquee_text": "",
@@ -64,9 +68,19 @@ def default_marquee_text():
     return config["marquee"]["text"].strip()
 
 
-def save(top_banner, bottom_banner, marquee, marquee_text):
+def default_top_banner_text():
+    """Same idea as default_marquee_text(), for the top banner's title
+    text instead."""
+    path = os.path.join(_project_dir, CAMERA_BANNER_MARQUEE_YAML)
+    with open(path, encoding="utf-8") as yaml_file:
+        config = yaml.safe_load(yaml_file)
+    return config["top_banner"]["text"].strip()
+
+
+def save(top_banner, top_banner_text, bottom_banner, marquee, marquee_text):
     settings = {
         "top_banner": bool(top_banner),
+        "top_banner_text": str(top_banner_text).strip(),
         "bottom_banner": bool(bottom_banner),
         "marquee": bool(marquee),
         "marquee_text": str(marquee_text).strip(),

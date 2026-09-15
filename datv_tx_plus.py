@@ -206,6 +206,11 @@ GAIN_DB = -24
 # (overlay_settings.py on the Flask side); left None for direct/interactive
 # runs of this script, which always just use the YAML text as-is.
 MARQUEE_TEXT_OVERRIDE = None
+# Same idea as MARQUEE_TEXT_OVERRIDE, for the top banner's title text
+# (camera_banner_marquee.yaml's top_banner.text / video_banner_marquee.yaml's
+# per-video text) instead. bottom_banner has no equivalent - it's always the
+# live callsign/clock/telemetry overlay, never free text.
+TITLE_TEXT_OVERRIDE = None
 
 # When SOURCE == "testcard": testcard mode never uses the title/bars/clock/
 # telemetry overlay system above (see main() - top_bar_enabled/
@@ -1024,6 +1029,13 @@ def build_pipeline_description(ip, profile, source_path=None,
         # only ever reads that global at render time, so overwriting it
         # here, once, before Gst.parse_launch() is enough for either SOURCE.
         MARQUEE_TEXT = MARQUEE_TEXT_OVERRIDE
+    if TITLE_TEXT_OVERRIDE:
+        # Same reasoning as MARQUEE_TEXT_OVERRIDE just above - the existing
+        # `global TITLE_TEXT` statement in the SOURCE == "video" branch
+        # above already makes TITLE_TEXT global for this whole function
+        # regardless of which branch actually ran, so this covers camera
+        # too.
+        TITLE_TEXT = TITLE_TEXT_OVERRIDE
     if (width, height) not in OVERLAY_STYLES:
         raise SystemExit(
             "No OVERLAY_STYLES entry for {}x{} - add one (see the comment "
