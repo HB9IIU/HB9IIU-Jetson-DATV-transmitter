@@ -1,0 +1,40 @@
+# Runs the main DATV control app (app.py, port 80 - Pluto TX, camera,
+# overlays, PTT, Setup page) as a background service, independent of any
+# interactive terminal/PyCharm session - so it survives a reboot, a
+# dropped SSH session, or a crash, instead of dying the moment whoever
+# started it manually closes their terminal.
+#
+# Runs as the "daniel" user (not root) - same user the hardware access
+# (GPIO/SPI for the Pluto, USB video key, camera/audio devices) already
+# works under interactively, so group memberships (dialout/gpio/audio/
+# video/plugdev) carry over unchanged. Port 80 is privileged, so
+# AmbientCapabilities grants just enough (CAP_NET_BIND_SERVICE) to bind it
+# without running the whole process as root.
+#
+# One-time install (as root, on the Jetson):
+#   sudo cp system/datv-app.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now datv-app.service
+# Logs: journalctl -u datv-app -f
+# Restart after a code change: sudo systemctl restart datv-app
+
+[Unit]
+Description=DATV control app (Pluto TX, camera, overlays, PTT)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=daniel
+Group=daniel
+WorkingDirectory=/home/daniel/jetson-stream-panel
+ExecStart=/home/daniel/jetson-stream-panel/.venv/bin/python3 app.py
+Restart=always
+RestartSec=3
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

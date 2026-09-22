@@ -94,6 +94,11 @@ def retry(job_id):
     engine.retry(job_id)
     return jsonify(ok=True),202
 
+@app.route('/api/jobs/<job_id>', methods=['DELETE'])
+def dismiss(job_id):
+    engine.dismiss(job_id)
+    return jsonify(ok=True)
+
 def video_item(video_id):
     for item in engine.catalog():
         if item['id'] == video_id:

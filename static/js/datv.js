@@ -247,6 +247,89 @@ async function updateTelemetry() {
 updateTelemetry();
 window.setInterval(updateTelemetry, 2000);
 
+// PA relay safety interlock (see pa_relay.py) - the CN0417 pre-amp/200W PA
+// only gets powered once the local Pluto RX spectrum has shown a stable
+// signal AND the operator explicitly confirms via #pa-relay-engage-button.
+// This state is human-timescale (state changes are debounced server-side
+// over several seconds of frames), so it's polled at 1s like
+// #stream-status-message - not at the FFT canvas's 150ms redraw rate.
+const paRelayStatus = document.querySelector('#pa-relay-status');
+const paRelayEngageButton = document.querySelector('#pa-relay-engage-button');
+const paRelayDisengageButton = document.querySelector('#pa-relay-disengage-button');
+
+const PA_RELAY_TEXT = {
+  idle: 'PA relay: idle',
+  waiting: 'NOT READY (spectrum unstable)',
+  ready: 'READY — confirm to engage',
+  engaged: 'PA ENGAGED — LIVE',
+  fault: 'RELAY FAULT',
+};
+const PA_RELAY_CLASS = {
+  idle: 'text-secondary',
+  waiting: 'text-danger',
+  ready: 'text-amber',
+  engaged: 'text-success',
+  fault: 'text-danger',
+};
+
+function renderRelayStatus(data) {
+  if (!paRelayStatus) return;
+  const state = data.state || 'idle';
+  const label = (state === 'fault' && data.fault_reason)
+    ? `${PA_RELAY_TEXT.fault}: ${data.fault_reason}`
+    : (PA_RELAY_TEXT[state] || state);
+  paRelayStatus.innerHTML = `<span class="telemetry-dot me-2"></span>${label}`;
+  paRelayStatus.className = `small fw-semibold ms-auto ${PA_RELAY_CLASS[state] || 'text-secondary'}`;
+  paRelayEngageButton?.classList.toggle('d-none', state !== 'ready');
+  paRelayDisengageButton?.classList.toggle('d-none', state !== 'engaged' && state !== 'fault');
+}
+
+async function fetchRelayStatus() {
+  if (!paRelayStatus) return;
+  try {
+    const response = await fetch('/api/relay/status', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Relay status request failed');
+    renderRelayStatus(await response.json());
+  } catch (_error) {
+    paRelayStatus.innerHTML = '<span class="telemetry-dot me-2"></span>PA relay: unavailable';
+    paRelayStatus.className = 'small fw-semibold ms-auto text-secondary';
+    paRelayEngageButton?.classList.add('d-none');
+    paRelayDisengageButton?.classList.add('d-none');
+  }
+}
+
+paRelayEngageButton?.addEventListener('click', async () => {
+  paRelayEngageButton.disabled = true;
+  try {
+    const response = await fetch('/api/relay/engage', { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not engage PA relay');
+  } catch (error) {
+    showAppAlert(error.message);
+  } finally {
+    paRelayEngageButton.disabled = false;
+    await fetchRelayStatus();
+  }
+});
+
+// No confirmation on the way down - removing power from the pre-amp is
+// never gated, unlike engaging it.
+paRelayDisengageButton?.addEventListener('click', async () => {
+  paRelayDisengageButton.disabled = true;
+  try {
+    await fetch('/api/relay/disengage', { method: 'POST' });
+  } catch (_error) {
+    // best-effort - the poll below reflects whatever the server reports
+    // either way, and disengage is always safe to retry.
+  } finally {
+    paRelayDisengageButton.disabled = false;
+    await fetchRelayStatus();
+  }
+});
+
+fetchRelayStatus();
+window.setInterval(fetchRelayStatus, 1000);
+
 const localFftCanvas = document.querySelector('#local-fft-canvas');
 const localFftStatus = document.querySelector('#local-fft-status');
 const localFftContext = localFftCanvas?.getContext('2d');

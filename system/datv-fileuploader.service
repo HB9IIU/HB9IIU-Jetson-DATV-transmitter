@@ -1,0 +1,42 @@
+# Runs the video-prep uploader (fileUploader/fileUploader.py, port 8088 -
+# FFV1 transcode queue onto the USB video key) as its own background
+# service, independent of datv-app.service and of any interactive
+# terminal - so it keeps running (and auto-restarts on a crash) without
+# anyone needing to leave a terminal open.
+#
+# Deliberately a separate unit from datv-app.service rather than one
+# combined service: the two are independent Flask processes on different
+# ports today, and fileUploader.py already enforces its own single-
+# instance lock (fcntl.flock on state/service.lock) - keeping them as
+# separate units means restarting/redeploying one never has to touch the
+# other.
+#
+# Runs as the "daniel" user (not root), same as datv-app.service - only
+# needed for consistent file ownership on the USB video key, since
+# fileUploader.py never touches anything requiring elevated privileges.
+#
+# One-time install (as root, on the Jetson):
+#   sudo cp system/datv-fileuploader.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now datv-fileuploader.service
+# Logs: journalctl -u datv-fileuploader -f
+# Restart after a code change: sudo systemctl restart datv-fileuploader
+
+[Unit]
+Description=DATV video-prep uploader (FFV1 transcode queue)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=daniel
+Group=daniel
+WorkingDirectory=/home/daniel/jetson-stream-panel/fileUploader
+ExecStart=/usr/bin/python3 fileUploader.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

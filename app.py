@@ -18,6 +18,7 @@ from datv_engine import DatvEngine
 from dvbs2_profiles import CAMERA_VIDEO_PROFILE_NAMES, PROFILES
 from pluto_fft_bridge import get_latest_frame, start_background_reader
 import overlay_settings
+import pa_relay
 import pluto_callsign
 import usb_video_key
 
@@ -233,10 +234,32 @@ def set_pluto_rx_fft(enabled, frequency_hz=None):
         PLUTO_MQTT_CLIENT.publish(prefix + "rx/stream/run", payload="0", qos=1)
 
 
+def _current_zoom_span_hz():
+    """Shared by /api/fft (frontend display cropping) and RELAY_CONTROLLER
+    (server-side stability detection) - both need exactly the same margin +
+    occupied-bandwidth + margin window (see FFT_ZOOM_TO_BANDWIDTH_RATIO's
+    comment above) computed from the live symbol rate, not two independently
+    maintained copies of this formula."""
+    if not CURRENT_SYMBOL_RATE_KSPS:
+        return None
+    occupied_bandwidth_hz = CURRENT_SYMBOL_RATE_KSPS * 1000 * OCCUPIED_BANDWIDTH_FACTOR
+    return occupied_bandwidth_hz * FFT_ZOOM_TO_BANDWIDTH_RATIO
+
+
 _start_pluto_telemetry()
 start_background_reader()
 usb_video_key.init(PROJECT_DIR)
 overlay_settings.init(PROJECT_DIR)
+# PA-relay safety interlock - see pa_relay.py's own docstring for the full
+# story. Getter callables rather than a direct import keep pa_relay.py from
+# ever importing this module back (one-directional dependency).
+RELAY_CONTROLLER = pa_relay.RelayController(
+    get_stream_state=lambda: STREAM_ENGINE.status()["state"],
+    get_latest_fft=get_latest_frame,
+    get_span_hz=lambda: CURRENT_FFT_SPAN_HZ,
+    get_zoom_span_hz=_current_zoom_span_hz,
+)
+pa_relay.start_background_monitor(RELAY_CONTROLLER)
 
 
 def detect_video_devices():
@@ -503,15 +526,11 @@ def fft():
     our own signal always sits by construction (rx/webfft/frequency is
     always our own TX frequency - see set_pluto_rx_fft()).
     """
-    zoom_span_hz = None
-    if CURRENT_SYMBOL_RATE_KSPS:
-        occupied_bandwidth_hz = CURRENT_SYMBOL_RATE_KSPS * 1000 * OCCUPIED_BANDWIDTH_FACTOR
-        zoom_span_hz = occupied_bandwidth_hz * FFT_ZOOM_TO_BANDWIDTH_RATIO
     return jsonify({
         "bins": get_latest_frame(),
         "center_hz": CURRENT_TX_FREQUENCY_HZ or PLUTO_TX_FREQUENCY_HZ,
         "span_hz": CURRENT_FFT_SPAN_HZ,
-        "zoom_span_hz": zoom_span_hz,
+        "zoom_span_hz": _current_zoom_span_hz(),
     })
 
 
@@ -588,8 +607,40 @@ def stream_start():
 
 @app.route("/api/stream/stop", methods=["POST"])
 def stream_stop():
+    # Before anything else - synchronous belt-and-suspenders alongside
+    # RELAY_CONTROLLER.tick()'s own backstop, so the PA relay drops within
+    # this same request rather than waiting for the next monitor tick.
+    RELAY_CONTROLLER.force_disengage_and_idle()
     set_pluto_rx_fft(False)
     return jsonify(STREAM_ENGINE.stop())
+
+
+@app.route("/api/relay/status")
+def relay_status():
+    return jsonify(RELAY_CONTROLLER.status())
+
+
+@app.route("/api/relay/engage", methods=["POST"])
+def relay_engage():
+    """Operator confirmation that it's safe to power the CN0417 pre-amp -
+    only succeeds once RELAY_CONTROLLER has independently decided the local
+    Pluto RX spectrum has held a stable plateau (state == "ready"). See
+    pa_relay.py's docstring - this is a deliberate human-in-the-loop gate
+    on top of the automatic detector, not a rubber stamp."""
+    ok, state = RELAY_CONTROLLER.request_engage()
+    if not ok:
+        return jsonify({
+            "error": "Relay not ready to engage (state: {})".format(state),
+            "state": state,
+        }), 409
+    return jsonify({"state": state}), 202
+
+
+@app.route("/api/relay/disengage", methods=["POST"])
+def relay_disengage():
+    """Manual e-stop - always allowed, no confirmation required (removing
+    power is never gated)."""
+    return jsonify({"state": RELAY_CONTROLLER.request_disengage()})
 
 
 @app.route("/api/gain", methods=["POST"])
@@ -736,6 +787,13 @@ def video_thumbnail():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
+    # Port 80 so the web UI is reachable as plain http://jetson-nano.local
+    # with no port suffix - needs cap_net_bind_service granted to the
+    # python3 binary on the Jetson (setcap, one-time), rather than running
+    # this whole process as root: debug=True leaves Werkzeug's interactive
+    # debugger reachable, which is a real risk to run with root privileges
+    # even on a LAN-only device. See `sudo setcap 'cap_net_bind_service=+ep'
+    # $(readlink -f $(which python3))`.
+    app.run(host="0.0.0.0", port=80, debug=True, threaded=True)
 
 

@@ -1,8 +1,22 @@
 <!doctype html>
 <html lang="en" data-bs-theme="dark">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="app-token" content="{{ token }}"><title>DATV · Video library</title><link href="/static/bootstrap.min.css" rel="stylesheet"><link href="/static/app.css" rel="stylesheet"></head>
-<body><div class="container-xl py-4 py-lg-5">
-<header class="d-flex justify-content-between align-items-center mb-5"><a class="brand" href="/">◈ <span>DATV<span class="brand-light"> / VIDEO LAB</span></span></a><span class="badge rounded-pill status-pill" id="connection">Connecting…</span></header>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="app-token" content="{{ token }}"><title>Jetson DATV — Video library</title><link href="/static/bootstrap.min.css" rel="stylesheet"><link href="/static/datv.css" rel="stylesheet"><link href="/static/app.css" rel="stylesheet"></head>
+<body>
+<nav class="navbar navbar-expand-lg sticky-top">
+  <div class="container-xl py-2">
+    <a class="navbar-brand fs-4" href="http://{{ request.host.split(':')[0] }}/" aria-label="Jetson DATV home">JETSON <span style="color:var(--blue)">DATV</span></a>
+    <button class="navbar-toggler" type="button" disabled aria-label="Navigation"><span class="navbar-toggler-icon"></span></button>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav ms-5 gap-lg-3">
+        <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}/">Home</a></li>
+        <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}/setup">Setup</a></li>
+        <li class="nav-item"><span class="nav-link active">Video Library</span></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+<div class="container-xl py-4 py-lg-5">
+<div class="d-flex justify-content-end mb-3"><span class="badge rounded-pill status-pill" id="connection">Connecting…</span></div>
 <div class="row align-items-end mb-4"><div class="col-lg-8"><div class="eyebrow mb-2">JETSON NANO · SOURCE PREPARATION</div><h1>Your footage. Ready for air.</h1><p class="text-secondary mb-0">Upload once. Prepare a high-quality source for your next transmission.</p></div><div class="col-lg-4 text-lg-end mt-3"><span class="format-chip">640×360</span> <span class="format-chip">960×540</span> <span class="format-chip">FFV1 Lossless</span></div></div>
 <div class="row g-3 mb-4" id="metrics"><div class="col-6 col-lg-3"><div class="metric"><span>CPU LOAD</span><strong id="cpu">—</strong><small id="load">4-core Jetson Nano</small></div></div><div class="col-6 col-lg-3"><div class="metric"><span>MEMORY</span><strong id="memory">—</strong><small id="memoryDetail">System RAM</small></div></div><div class="col-6 col-lg-3"><div class="metric"><span>CPU TEMPERATURE</span><strong id="temperature">—</strong><small>Live · refreshed every 2 seconds</small></div></div><div class="col-6 col-lg-3"><div class="metric"><span>USB FREE SPACE</span><strong id="usbFree">—</strong><small id="usbDetail">Checking storage</small></div></div></div>
 <div id="notice" class="alert alert-danger d-none" role="alert"></div>

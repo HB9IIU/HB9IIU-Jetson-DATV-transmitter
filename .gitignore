@@ -5,6 +5,7 @@ old_project_TO_DELETE/
 *.pid
 overlay_settings.json
 pluto_callsign.json
+usb_video_key_registry.json
 __pycache__/
 *.pyc
 

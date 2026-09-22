@@ -1,0 +1,57 @@
+# Auto-mounts any USB storage partition the instant it's plugged in, using
+# udisks2 (already present on the Jetson - see usb_video_key.py, which
+# reads lsblk/udevadm but never mounts anything itself) instead of a raw
+# `mount` call, so it gets the same safe defaults (uid/gid, an
+# /media/<user>/<label> mountpoint, clean auto-unmount on removal) a
+# desktop session's own automount would normally provide.
+#
+# Needed because this Jetson runs headless (SSH/PyCharm only, no GUI
+# login) - udisks2's own automount trigger normally only fires for an
+# active local desktop session, which never exists here, so without this
+# rule nothing ever tells it to mount an inserted stick (confirmed on real
+# hardware 2026-09-22 - a plugged-in stick showed up via lsblk with
+# mounted_at=None and just sat there forever).
+#
+# Runs as root (udev's own RUN+= always does), which udisks2/polkit treats
+# as always-authorized to mount regardless of session state - so this
+# works the same whether anyone is logged into a desktop or not.
+#
+# systemd-run --no-block is needed rather than calling udisksctl directly:
+# udev rules must return quickly, and udisksctl's D-Bus round-trip can be
+# slow enough to hit udev's own rule-execution timeout otherwise.
+#
+# Mounted with -o uid=...,gid=... forcing ownership to the "daniel" user
+# app.py actually runs as (real bug hit 2026-09-22: without this, a mount
+# triggered by root - which this rule always runs as, since udev's own
+# RUN+= always does - lands at /media/root/<label> owned by root, and
+# usb_video_key.py's select() then fails to create folders on it with
+# Permission denied, since app.py itself is never run as root - see
+# .idea/deployment.xml / PyCharm's remote interpreter config). FAT-family
+# filesystems (vfat/exfat, what a USB stick normally ships with) have no
+# native Unix permission bits, so udisks2 honours this option directly
+# rather than needing a chown after the fact. `id -u`/`id -g` look the
+# uid/gid up fresh each time rather than hardcoding a number, so this
+# keeps working even if "daniel"'s uid ever changes.
+#
+# Calls out to usb-video-key-mount.sh (same directory) rather than
+# inlining the mount command here - see that script's own comments for
+# why a separate file is much easier to debug than a one-liner buried
+# inside a udev rule's own quoting rules.
+#
+# One-time install (as root, on the Jetson):
+#   sudo cp system/99-usb-video-key-automount.rules /etc/udev/rules.d/
+#   sudo cp system/usb-video-key-mount.sh /usr/local/bin/
+#   sudo chmod +x /usr/local/bin/usb-video-key-mount.sh
+#   sudo udevadm control --reload-rules
+# No reboot needed - takes effect on the next USB insert. A stick that's
+# already mounted (including one already wrongly mounted under
+# /media/root/ by an older copy of this same rule) needs a one-time
+# unplug/replug to pick this up - reloading the rule alone doesn't touch
+# an already-inserted device.
+#
+# To test the actual mount logic directly, without touching udev/USB at
+# all: `sudo /usr/local/bin/usb-video-key-mount.sh sda1` (swap sda1 for
+# whatever `lsblk` shows) - any real failure prints straight to the
+# terminal.
+
+ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", RUN+="/usr/bin/systemd-run --no-block /usr/local/bin/usb-video-key-mount.sh %k"

@@ -204,6 +204,19 @@ class Engine:
                 self.active = None
             raise
 
+    def dismiss(self, job_id):
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise ValueError('Job not found')
+            if job['status'] != 'error':
+                raise ValueError('Only a failed job can be dismissed')
+            for suffix in ('.json', '.log'):
+                path = os.path.join(self.state, job_id + suffix)
+                if os.path.exists(path):
+                    os.remove(path)
+            del self.jobs[job_id]
+
     def retry(self, job_id):
         with self.lock:
             job = self.jobs[job_id]

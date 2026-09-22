@@ -30,10 +30,18 @@ version does none of that:
 
 If a plugged-in stick never gets an automount from the OS (no desktop
 session, or automount disabled), list_candidates() will show it with
-mounted_at=None and the Setup page says so - the fix in that case is a
-one-time manual mount on the Jetson itself (e.g. `udisksctl mount -b
-/dev/sdb1` as the same user app.py runs as, or via a file manager if one
-is available), not something this module tries to work around.
+mounted_at=None and the Setup page says so - not something this module
+tries to work around directly, since it deliberately never mounts
+anything itself (see above). Confirmed on real hardware (2026-09-22): a
+headless Jetson (SSH/PyCharm only, no GUI login) never automounts on its
+own, since udisks2's automount trigger normally requires an active local
+desktop session. The real, one-time-per-Jetson fix is
+system/99-usb-video-key-automount.rules - a udev rule that runs
+`udisksctl mount` automatically on insert, working headless because it
+runs as root (see that file's own comments for the install command and
+why). Without it installed, the one-off manual fallback is `udisksctl
+mount -b /dev/sdb1` (as the same user app.py runs as), which is what
+surfaced this whole gap in the first place.
 """
 
 import json
@@ -120,12 +128,32 @@ def _boot_disk_device():
 def _lsblk_tree():
     try:
         result = subprocess.run(
-            ["lsblk", "-J", "-o", "NAME,TYPE,TRAN,FSTYPE,LABEL,MOUNTPOINT,SIZE"],
+            # -b for raw byte SIZE values (not lsblk's own locale-formatted
+            # "115,3G" strings) - needed to actually compare partition
+            # sizes below, not just display them. Reformatted for display
+            # by _format_bytes() instead.
+            ["lsblk", "-J", "-b", "-o", "NAME,TYPE,TRAN,FSTYPE,LABEL,MOUNTPOINT,SIZE"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             universal_newlines=True, timeout=5)
         return json.loads(result.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
         return {"blockdevices": []}
+
+
+def _format_bytes(byte_count):
+    """Same rounding/unit rules as setup.js's own formatBytes() - kept
+    visually consistent between the two, even though this one only ever
+    formats a whole-disk/partition capacity and that one formats live
+    free/used space."""
+    units = ("B", "KB", "MB", "GB", "TB")
+    value = float(byte_count)
+    index = 0
+    while value >= 1024 and index < len(units) - 1:
+        value /= 1024
+        index += 1
+    if value >= 10 or index == 0:
+        return "{:.0f} {}".format(value, units[index])
+    return "{:.1f} {}".format(value, units[index])
 
 
 def _device_serial(device_node):
@@ -159,21 +187,38 @@ def list_candidates():
         if boot_disk is not None and disk_node == boot_disk:
             continue
 
+        # Largest filesystem-bearing partition wins, not the first one -
+        # real bug hit 2026-09-22: a dual-partition installer stick (a
+        # ~200M EFI System Partition + the real, large data partition)
+        # picked the tiny ESP every time, since it's always listed first
+        # in lsblk's own child order. The whole point of this feature is
+        # bulk video storage, so "biggest" is the right tie-breaker - a
+        # bare label check (e.g. skip anything named "EFI") would be
+        # fragile against a differently-labelled/positioned partition
+        # layout, where size never is.
         filesystem_entry = None
         for child in entry.get("children") or []:
-            if child.get("fstype"):
+            if not child.get("fstype"):
+                continue
+            # lsblk's own JSON output always quotes SIZE as a string, even
+            # with -b - comparing those directly with `>` sorts them
+            # lexicographically ("209715200" > "123767619584", since '2' >
+            # '1'), so a 200M partition was still beating a 123G one. Real
+            # bug hit 2026-09-22, same day as the "largest wins" logic
+            # itself: it silently never worked.
+            if filesystem_entry is None or int(child.get("size") or 0) > int(filesystem_entry.get("size") or 0):
                 filesystem_entry = child
-                break
         if filesystem_entry is None and entry.get("fstype"):
             filesystem_entry = entry
 
         if filesystem_entry is None:
-            device_node, fstype, label, mountpoint = disk_node, None, None, None
+            device_node, fstype, label, mountpoint, size_bytes = disk_node, None, None, None, entry.get("size")
         else:
             device_node = "/dev/{}".format(filesystem_entry.get("name"))
             fstype = filesystem_entry.get("fstype")
             label = filesystem_entry.get("label")
             mountpoint = filesystem_entry.get("mountpoint")
+            size_bytes = filesystem_entry.get("size")
 
         # The Pluto SDR itself enumerates as a small (~30M) USB mass-
         # storage device (label "PlutoSDR", holding its own network
@@ -202,7 +247,12 @@ def list_candidates():
             "device": device_node,
             "label": label,
             "fstype": fstype,
-            "size": entry.get("size"),
+            # The selected partition's own size, not the whole disk's
+            # (real bug alongside the selection one above - "size" used to
+            # always report the disk's total capacity regardless of which
+            # partition was actually picked, misleadingly showing "115G"
+            # even while every other field pointed at the 200M partition).
+            "size": _format_bytes(size_bytes) if size_bytes else None,
             "mounted_at": mountpoint,
             "total_bytes": total_bytes,
             "free_bytes": free_bytes,
