@@ -312,3 +312,61 @@ callsignRebootClose?.addEventListener('click', () => {
 });
 
 loadCallsign();
+
+/**
+ * Restart app - see app.py's app_restart(). The server exits ~1s after
+ * answering and systemd starts it again ~3s later, so first wait for it to
+ * go away (otherwise the old process could answer the poll), then for it
+ * to answer again, then reload the page.
+ */
+const appRestartButton = document.querySelector('#app-restart-button');
+const appRestartMessage = document.querySelector('#app-restart-message');
+const appRestartOverlay = document.querySelector('#app-restart-overlay');
+const appRestartStatus = document.querySelector('#app-restart-status');
+const appRestartDetail = document.querySelector('#app-restart-detail');
+
+async function appIsUp() {
+  try {
+    const response = await fetch('/api/stream/status', { cache: 'no-store' });
+    return response.ok;
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function waitForAppRestart() {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const deadlineMs = Date.now() + 60000;
+  while (Date.now() < deadlineMs && await appIsUp()) await sleep(500);
+  while (Date.now() < deadlineMs) {
+    if (await appIsUp()) return true;
+    await sleep(1000);
+  }
+  return false;
+}
+
+appRestartButton?.addEventListener('click', async () => {
+  if (!window.confirm('Restart the app now?\n\nAny active transmission will stop.')) return;
+
+  appRestartButton.disabled = true;
+  appRestartMessage.classList.remove('text-danger');
+  appRestartMessage.textContent = '';
+  try {
+    const response = await fetch('/api/app/restart', { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Request failed');
+
+    appRestartOverlay.classList.remove('d-none');
+    appRestartOverlay.classList.add('d-flex');
+    if (await waitForAppRestart()) {
+      window.location.reload();
+      return;
+    }
+    appRestartStatus.textContent = 'The app did not come back.';
+    appRestartDetail.textContent = 'Check it on the Jetson: journalctl -u datv-app -n 50';
+  } catch (error) {
+    appRestartMessage.textContent = 'Could not restart: ' + error.message;
+    appRestartMessage.classList.add('text-danger');
+    appRestartButton.disabled = false;
+  }
+});

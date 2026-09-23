@@ -95,7 +95,30 @@
         </article>
       </div>
     </section>
+
+    <header class="mt-5 mb-4">
+      <div class="eyebrow mb-2">APP</div>
+      <h1 class="display-6 fw-bold mb-2">Restart app</h1>
+      <p class="text-muted-custom mb-0">Restarts this web app (the datv-app service) - e.g. to pick up updated code. Any active transmission is stopped first. Takes about 5 seconds.</p>
+    </header>
+
+    <section class="row g-3 g-xl-4">
+      <div class="col-12">
+        <article class="surface step-card p-3 p-lg-4">
+          <button class="btn btn-warning" id="app-restart-button" type="button">Restart app</button>
+          <span class="small text-muted-custom d-block mt-2" id="app-restart-message"></span>
+        </article>
+      </div>
+    </section>
   </main>
+
+  <div id="app-restart-overlay" class="position-fixed top-0 start-0 w-100 h-100 d-none align-items-center justify-content-center" style="background: rgba(0,0,0,0.75); z-index: 1050;">
+    <div class="surface p-4 p-lg-5 text-center" style="max-width: 360px;">
+      <div class="spinner-border text-primary mb-3" role="status"></div>
+      <div class="fw-semibold" id="app-restart-status">Restarting app…</div>
+      <div class="small text-muted-custom mt-2" id="app-restart-detail">This page reloads by itself once it's back.</div>
+    </div>
+  </div>
 
   <div id="callsign-reboot-overlay" class="position-fixed top-0 start-0 w-100 h-100 d-none align-items-center justify-content-center" style="background: rgba(0,0,0,0.75); z-index: 1050;">
     <div class="surface p-4 p-lg-5 text-center" style="max-width: 360px;">

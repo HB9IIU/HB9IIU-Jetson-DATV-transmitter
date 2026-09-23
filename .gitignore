@@ -35,3 +35,8 @@ debug_output.ts
 # preprocess_videos.py output - generated per-resolution encodes, not
 # source; individual files can exceed GitHub's 100MB limit.
 preprocessed_*x*/
+
+# tuning/ benchmark clips and per-run trial output - large generated media.
+# tuning/results/ (small text summaries) stays versioned.
+tuning/clips/
+tuning/runs/

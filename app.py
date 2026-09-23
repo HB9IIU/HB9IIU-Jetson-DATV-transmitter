@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory, url_for
@@ -613,6 +614,30 @@ def stream_stop():
     RELAY_CONTROLLER.force_disengage_and_idle()
     set_pluto_rx_fft(False)
     return jsonify(STREAM_ENGINE.stop())
+
+
+@app.route("/api/app/restart", methods=["POST"])
+def app_restart():
+    """Setup page's "Restart app" button. Stops any transmission the same
+    way stream_stop() does, then exits - datv-app.service's Restart=always
+    starts a fresh app.py 3s later (RestartSec), so no sudo is needed.
+    With debug=True's reloader, the served process is a child of
+    Werkzeug's watcher, which exits with the child's code (anything but 3),
+    so the whole service really exits and systemd takes over.
+    """
+    # INVOCATION_ID is set by systemd for every service process - without
+    # it this app.py was started by hand (PyCharm/terminal), and exiting
+    # would just kill it with nothing to bring it back.
+    if not os.environ.get("INVOCATION_ID"):
+        return jsonify({"error": "app.py isn't running as the datv-app service - "
+                                 "restart it where you started it."}), 409
+    RELAY_CONTROLLER.force_disengage_and_idle()
+    set_pluto_rx_fft(False)
+    STREAM_ENGINE.stop()
+    app.logger.warning("Restart requested from the web UI - exiting for systemd to restart.")
+    # Delayed so this response still reaches the browser.
+    threading.Timer(1.0, os._exit, args=(1,)).start()
+    return jsonify({"restarting": True}), 202
 
 
 @app.route("/api/relay/status")

@@ -19,7 +19,11 @@ local test clip through the real hardware H.265 encoder (datv_tx_plus.py's
 own build_pipeline_description(), TX_OUTPUT="file", no Pluto/MQTT needed),
 then measures the resulting .ts file's real bitrate with ffprobe. A trial is
 "safe" if that real bitrate stays under SAFETY_MARGIN of the profile's exact
-TS capacity. Converges on the highest safe bitrate, then reports a PSNR
+TS capacity AND (added 2026-09-23) the .ts passes through the exact on-air
+CBR relay command (datv_tx_plus.build_cbr_relay_command()) with zero
+"dts < pcr" warnings at some muxdelay in MUXDELAY_CANDIDATES - the average
+check alone missed short-term keyframe bursts that the relay can't
+schedule in time, which is what the receiver actually suffers from. Converges on the highest safe bitrate, then reports a PSNR
 comparison (via ffmpeg's psnr filter - libvmaf isn't available on this
 Jetson's system ffmpeg or on the two static builds tried on 2026-09-07: one
 had no libvmaf, the other needed a newer glibc than this L4T image has)
@@ -64,6 +68,8 @@ from a terminal.
 Usage: python tune_profiles.py
 """
 
+import contextlib
+import io
 import os
 import re
 import subprocess
@@ -74,12 +80,30 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402
 
-import datv_tx_plus as tx
-
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-WORK_DIR = os.path.join(SCRIPT_DIR, "tuning")
-FFMPEG = os.path.join(SCRIPT_DIR, "ffmpeg-static", "ffmpeg")
-FFPROBE = os.path.join(SCRIPT_DIR, "ffmpeg-static", "ffprobe")
+# This script lives in tuning/, one level below the project root that holds
+# datv_tx_plus.py - put the root on sys.path so the import below finds it.
+PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, PROJECT_DIR)
+
+import datv_tx_plus as tx  # noqa: E402
+import overlay_settings  # noqa: E402
+
+CLIPS_DIR = os.path.join(SCRIPT_DIR, "clips")
+# PSNR references are cached here across runs; each run's trial files and
+# log go in their own dated RUN_DIR subfolder (set in main()).
+WORK_DIR = os.path.join(SCRIPT_DIR, "runs")
+RUN_DIR = None
+RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
+# ffmpeg-static/ isn't on the Jetson (checked 2026-09-23) - fall back to the
+# system ffmpeg/ffprobe (3.4) rather than failing on a missing path.
+_STATIC_FFMPEG_DIR = os.path.join(PROJECT_DIR, "ffmpeg-static")
+if os.path.isdir(_STATIC_FFMPEG_DIR):
+    FFMPEG = os.path.join(_STATIC_FFMPEG_DIR, "ffmpeg")
+    FFPROBE = os.path.join(_STATIC_FFMPEG_DIR, "ffprobe")
+else:
+    FFMPEG = "ffmpeg"
+    FFPROBE = "ffprobe"
 
 # Which profile(s) to tune - edit this directly, then just hit Run (see
 # module docstring for why this is a constant, not a command-line
@@ -96,14 +120,15 @@ PROFILES_TO_TUNE = ["sr500_fec34"]
 # command-line argument, same convention as PROFILE/SOURCE in
 # datv_tx_plus.py.
 TEST_CLIPS_MOVIE = {
-    (640, 360): os.path.join(WORK_DIR, "test_clip_640x360_90s.mkv"),
-    (960, 540): os.path.join(WORK_DIR, "test_clip_960x540_90s.mkv"),
-    (1280, 720): os.path.join(WORK_DIR, "test_clip_1280x720_90s.mkv"),
+    (640, 360): os.path.join(CLIPS_DIR, "test_clip_640x360_90s.mkv"),
+    (960, 540): os.path.join(CLIPS_DIR, "test_clip_960x540_90s.mkv"),
+    (1280, 720): os.path.join(CLIPS_DIR, "test_clip_1280x720_90s.mkv"),
 }
+# Produced by record_benchmark_clip.py.
 TEST_CLIPS_CAMERA = {
-    (640, 360): os.path.join(WORK_DIR, "camera_clip_640x360_90s.mkv"),
-    (960, 540): os.path.join(WORK_DIR, "camera_clip_960x540_90s.mkv"),
-    (1280, 720): os.path.join(WORK_DIR, "camera_clip_1280x720_90s.mkv"),
+    (640, 360): os.path.join(CLIPS_DIR, "camera_clip_640x360_90s.mkv"),
+    (960, 540): os.path.join(CLIPS_DIR, "camera_clip_960x540_90s.mkv"),
+    (1280, 720): os.path.join(CLIPS_DIR, "camera_clip_1280x720_90s.mkv"),
 }
 TEST_CLIPS = TEST_CLIPS_CAMERA
 
@@ -114,6 +139,24 @@ TEST_CLIPS = TEST_CLIPS_CAMERA
 # clip's motion being slightly worse than this test clip's.
 SAFETY_MARGIN = 0.97
 
+# Encode trials with the banners/marquee exactly as on air (the Setup page's
+# saved overlay_settings.json, camera_banner_marquee.yaml styling, live
+# telemetry text). 2026-09-23: overlay-free trials showed 0 relay warnings
+# at muxdelay 0.5s while the same profile on air (overlays on) still gave
+# ~300 - burned-in text changes the encoder's bursts, so leave this on for
+# bitrate/muxdelay tuning. PSNR is then measured against an overlay-free
+# reference, so its absolute value drops a little; the configured-vs-optimum
+# comparison stays fair (both rows carry the same overlays).
+TRIAL_OVERLAYS = True
+
+# Relay -muxdelay values tried per trial, smallest first (see
+# datv_tx_plus.CBR_MUXDELAY_SECONDS). A trial only counts as safe if one of
+# these gives ZERO "dts < pcr" warnings - capping at 1.0s keeps the extra
+# end-to-end latency sensible rather than hiding a real overload behind a
+# huge buffer.
+MUXDELAY_CANDIDATES = [0.2, 0.3, 0.5, 0.7, 1.0]
+RELAY_TIMEOUT_SECONDS = 120
+
 BISECTION_TOLERANCE_KBPS = 5
 FFPROBE_TIMEOUT_SECONDS = 15
 # Generous relative to real trial length (encoding paces to wall-clock time
@@ -121,6 +164,21 @@ FFPROBE_TIMEOUT_SECONDS = 15
 # subprocess, not the expected run time.
 TRIAL_TIMEOUT_SECONDS = 600
 TRIAL_RETRY_LIMIT = 2
+
+
+class _Tee:
+    """Minimal stdout splitter: console plus the run's log file."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, text):
+        for stream in self.streams:
+            stream.write(text)
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
 
 
 def log(message):
@@ -133,9 +191,8 @@ def log(message):
 def run_encode_trial(profile, video_bitrate_kbps, clip_path, out_ts_path):
     """Encode clip_path through the real pipeline at video_bitrate_kbps,
     writing out_ts_path, reusing datv_tx_plus.py's own pipeline builder with
-    TX_OUTPUT="file" so no Pluto/MQTT is involved. Overlay is off - a
-    telemetry/clock overlay burned into the picture would bias any quality
-    comparison, and it's irrelevant to a bitrate-vs-capacity measurement.
+    TX_OUTPUT="file" so no Pluto/MQTT is involved. Banners/marquee follow
+    TRIAL_OVERLAYS (see there for why they matter).
 
     Only ever called from within _trial_worker_main(), i.e. inside the
     short-lived --_trial subprocess - never directly from the orchestrator.
@@ -154,11 +211,40 @@ def run_encode_trial(profile, video_bitrate_kbps, clip_path, out_ts_path):
     tx.SOURCE = "video"
     tx.TX_OUTPUT = "file"
     tx.TX_OUTPUT_FILE = out_ts_path
+    if TRIAL_OVERLAYS:
+        # Same on/off switches and texts the web app passes to
+        # datv_web_worker.py from the Setup page.
+        overlay_settings.init(PROJECT_DIR)
+        settings = overlay_settings.load()
+        top_bar_enabled = settings["top_banner"]
+        bottom_bar_enabled = settings["bottom_banner"]
+        tx.MARQUEE_ENABLED = settings["marquee"]
+        tx.TITLE_TEXT_OVERRIDE = settings["top_banner_text"] or None
+        tx.MARQUEE_TEXT_OVERRIDE = settings["marquee_text"] or None
+        # SOURCE="video" would restyle from video_banner_marquee.yaml, but
+        # the benchmark clips are camera footage - keep the camera styling.
+        tx.load_video_banner_marquee_config = (
+            lambda source_path: tx.load_camera_banner_marquee_config())
+    else:
+        top_bar_enabled = bottom_bar_enabled = False
+        tx.MARQUEE_ENABLED = False
 
     Gst.init(None)
     pipeline_description = tx.build_pipeline_description(
-        None, trial_profile, clip_path, top_bar_enabled=False, bottom_bar_enabled=False)
+        None, trial_profile, clip_path, top_bar_enabled, bottom_bar_enabled)
     pipeline = Gst.parse_launch(pipeline_description)
+    # Same hookups as datv_tx_plus.main() - each only exists if enabled.
+    width, height = profile["resolution"]
+    marquee_overlay = pipeline.get_by_name("marquee_overlay")
+    if marquee_overlay is not None:
+        marquee_overlay.connect("draw", tx.draw_marquee, width, height,
+                                {"first_timestamp": None, "text_width": None})
+    telemetry_overlay = pipeline.get_by_name("telemetry_overlay")
+    # No Pluto here - fill in plausible values; the Jetson's own CPU
+    # temp/load in the string are live, just like on air.
+    fake_telemetry = {"temperature_ad": "45000",
+                      "tx/dvbs2/ts/bitrate": str(int(tx.calculate_dvbs2_ts_bitrate(profile)))}
+    last_telemetry_update = 0.0
     video_source = pipeline.get_by_name("filesrc")
     bus = pipeline.get_bus()
     pipeline.set_state(Gst.State.PLAYING)
@@ -166,6 +252,11 @@ def run_encode_trial(profile, video_bitrate_kbps, clip_path, out_ts_path):
     start = time.monotonic()
     try:
         while True:
+            now = time.monotonic()
+            if (telemetry_overlay is not None
+                    and now - last_telemetry_update >= tx.TELEMETRY_UPDATE_SECONDS):
+                telemetry_overlay.set_property("text", tx.format_telemetry(fake_telemetry))
+                last_telemetry_update = now
             message = bus.timed_pop_filtered(
                 int(1.0 * Gst.SECOND), Gst.MessageType.ERROR | Gst.MessageType.EOS)
             if message is not None:
@@ -225,6 +316,56 @@ def measure_bitrate_bps(ts_path):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
         timeout=FFPROBE_TIMEOUT_SECONDS)
     return int(result.stdout.strip())
+
+
+def count_relay_warnings(ts_path, capacity_bps, muxdelay_seconds):
+    """Push ts_path through the exact on-air CBR relay command (file in,
+    /dev/null out instead of UDP) and count its "dts < pcr" warnings.
+
+    The relay's mux decision depends only on timestamps and bytes written,
+    not on arrival timing, so a file reproduces the on-air result - checked
+    2026-09-22: muxdelay 0 gave ~18 warnings/s offline vs ~40/s on air, both
+    gone at 0.2+.
+    """
+    command = tx.build_cbr_relay_command(ts_path, os.devnull, capacity_bps, muxdelay_seconds)
+    command[0] = FFMPEG
+    # -y: ffmpeg otherwise refuses to "overwrite" /dev/null (UDP on air
+    # never needs it).
+    command.insert(1, "-y")
+    result = subprocess.run(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True, timeout=RELAY_TIMEOUT_SECONDS)
+    if result.returncode != 0:
+        raise RuntimeError("CBR relay check failed:\n" + result.stderr[-2000:])
+    # ffmpeg collapses repeats into "Last message repeated N times".
+    count = 0
+    previous_was_dts = False
+    for line in result.stderr.splitlines():
+        if "dts < pcr" in line:
+            count += 1
+            previous_was_dts = True
+            continue
+        match = re.search(r"Last message repeated (\d+) times", line)
+        if match and previous_was_dts:
+            count += int(match.group(1))
+        previous_was_dts = False
+    return count
+
+
+def find_min_clean_muxdelay(ts_path, capacity_bps):
+    """Smallest MUXDELAY_CANDIDATES value giving zero relay warnings, or
+    None if even the largest doesn't. Also returns {muxdelay: warnings} for
+    every value tried, for the log."""
+    tried = {}
+    for muxdelay in MUXDELAY_CANDIDATES:
+        tried[muxdelay] = count_relay_warnings(ts_path, capacity_bps, muxdelay)
+        if tried[muxdelay] == 0:
+            return muxdelay, tried
+    return None, tried
+
+
+def format_tried(tried):
+    return ", ".join("{}s:{}".format(d, n) for d, n in tried.items())
 
 
 def ensure_reference(clip_path, width, height, fps):
@@ -290,8 +431,9 @@ def find_max_safe_video_bitrate_kbps(profile_name):
         "searching video_bitrate_kbps in [{:.0f}, {:.0f}]".format(
             profile_name, capacity_bps, ceiling_bps, lo, hi))
 
-    trial_path = os.path.join(WORK_DIR, "_bisect_trial.ts")
+    trial_path = os.path.join(RUN_DIR, "{}_bisect_trial.ts".format(profile_name))
     best_kbps = None
+    best_muxdelay = None
     trial_num = 0
     while hi - lo > BISECTION_TOLERANCE_KBPS:
         trial_num += 1
@@ -301,12 +443,22 @@ def find_max_safe_video_bitrate_kbps(profile_name):
         trial_start = time.monotonic()
         run_encode_trial_subprocess(profile_name, mid, clip_path, trial_path)
         real_bps = measure_bitrate_bps(trial_path)
-        safe = real_bps <= ceiling_bps
-        log("  trial {}: video_bitrate_kbps={:.0f} -> real {} bit/s ({}) [{:.0f}s]".format(
-            trial_num, mid, real_bps, "safe" if safe else "OVER ceiling",
-            time.monotonic() - trial_start))
+        fits = real_bps <= ceiling_bps
+        # No point checking relay timing if the average already doesn't fit.
+        muxdelay, tried = find_min_clean_muxdelay(trial_path, capacity_bps) if fits else (None, {})
+        safe = fits and muxdelay is not None
+        if not fits:
+            verdict = "OVER ceiling"
+        elif muxdelay is None:
+            verdict = "relay timing FAILS up to {}s ({})".format(
+                MUXDELAY_CANDIDATES[-1], format_tried(tried))
+        else:
+            verdict = "safe, clean from muxdelay {}s ({})".format(muxdelay, format_tried(tried))
+        log("  trial {}: video_bitrate_kbps={:.0f} -> real {} bit/s, {} [{:.0f}s]".format(
+            trial_num, mid, real_bps, verdict, time.monotonic() - trial_start))
         if safe:
             best_kbps = mid
+            best_muxdelay = muxdelay
             lo = mid
         else:
             hi = mid
@@ -316,7 +468,7 @@ def find_max_safe_video_bitrate_kbps(profile_name):
             "Even the lowest bracket ({:.0f} kbps) exceeded the safety ceiling - "
             "this profile's SR/FEC may not actually support its own resolution "
             "target on real content.".format(lo))
-    return best_kbps, capacity_bps, clip_path
+    return best_kbps, best_muxdelay, capacity_bps, clip_path
 
 
 def tune_one_profile(profile_name):
@@ -324,13 +476,14 @@ def tune_one_profile(profile_name):
     width, height = profile["resolution"]
     original_kbps = profile["video_bitrate_kbps"]
 
-    best_kbps, capacity_bps, clip_path = find_max_safe_video_bitrate_kbps(profile_name)
+    best_kbps, best_muxdelay, capacity_bps, clip_path = (
+        find_max_safe_video_bitrate_kbps(profile_name))
 
     log("Building before/after PSNR comparison...")
     reference_path = ensure_reference(clip_path, width, height, tx.FPS)
 
-    original_ts = os.path.join(WORK_DIR, "_compare_original.ts")
-    best_ts = os.path.join(WORK_DIR, "_compare_best.ts")
+    original_ts = os.path.join(RUN_DIR, "{}_compare_original.ts".format(profile_name))
+    best_ts = os.path.join(RUN_DIR, "{}_compare_best.ts".format(profile_name))
     run_encode_trial_subprocess(profile_name, original_kbps, clip_path, original_ts)
     run_encode_trial_subprocess(profile_name, best_kbps, clip_path, best_ts)
 
@@ -338,37 +491,44 @@ def tune_one_profile(profile_name):
     best_real_bps = measure_bitrate_bps(best_ts)
     original_psnr = measure_psnr(original_ts, reference_path)
     best_psnr = measure_psnr(best_ts, reference_path)
+    # The configuration as it goes on air today (configured bitrate at the
+    # current relay muxdelay) - should reproduce what the on-air log shows,
+    # which is the sanity check that this offline method is trustworthy.
+    on_air_muxdelay = tx.CBR_MUXDELAY_SECONDS
+    original_on_air_warnings = count_relay_warnings(original_ts, capacity_bps, on_air_muxdelay)
+    original_muxdelay, original_tried = find_min_clean_muxdelay(original_ts, capacity_bps)
+
+    def pct(bps):
+        return bps / capacity_bps * 100.0
 
     print()
-    print("=" * 62)
+    print("=" * 70)
     print("Profile '{}' ({}x{}), DVB-S2 TS capacity = {:.0f} bit/s".format(
         profile_name, width, height, capacity_bps))
-    print("-" * 62)
-    print("  currently configured : {:4d} kbps -> real {:7d} bit/s, PSNR {:.2f} dB".format(
-        original_kbps, original_real_bps, original_psnr))
-    print("  found safe optimum   : {:4.0f} kbps -> real {:7d} bit/s, PSNR {:.2f} dB".format(
-        best_kbps, best_real_bps, best_psnr))
-    print("=" * 62)
-    if best_kbps > original_kbps:
-        print("-> raise video_bitrate_kbps for '{}' to {:.0f} in PROFILES "
-              "(datv_tx_plus.py) for better picture quality at the same "
-              "safe margin.".format(profile_name, best_kbps))
-    elif best_kbps < original_kbps:
-        print("-> LOWER video_bitrate_kbps for '{}' to {:.0f} in PROFILES - "
-              "the current value is not safely under this profile's real "
-              "capacity on real motion content.".format(profile_name, best_kbps))
-    else:
-        print("-> currently configured value is already the safe optimum.")
+    print("-" * 70)
+    print("  currently configured : {:4d} kbps -> real {:7d} bit/s ({:.1f}%), PSNR {:.2f} dB".format(
+        original_kbps, original_real_bps, pct(original_real_bps), original_psnr))
+    print("      relay @ on-air muxdelay {}s: {} warnings over the clip; clean from: {}".format(
+        on_air_muxdelay, original_on_air_warnings,
+        "{}s".format(original_muxdelay) if original_muxdelay is not None
+        else "never (tried {})".format(format_tried(original_tried))))
+    print("  found safe optimum   : {:4.0f} kbps -> real {:7d} bit/s ({:.1f}%), PSNR {:.2f} dB".format(
+        best_kbps, best_real_bps, pct(best_real_bps), best_psnr))
+    print("      relay clean from muxdelay {}s".format(best_muxdelay))
+    print("=" * 70)
 
     return {
         "profile_name": profile_name,
         "original_kbps": original_kbps,
         "best_kbps": best_kbps,
+        "best_muxdelay": best_muxdelay,
         "capacity_bps": capacity_bps,
         "original_real_bps": original_real_bps,
         "best_real_bps": best_real_bps,
         "original_psnr": original_psnr,
         "best_psnr": best_psnr,
+        "original_on_air_warnings": original_on_air_warnings,
+        "original_muxdelay": original_muxdelay,
     }
 
 
@@ -382,8 +542,10 @@ def print_final_report(results, errors, run_start):
     for r in results:
         arrow = ("raise to" if r["best_kbps"] > r["original_kbps"] else
                   "LOWER to" if r["best_kbps"] < r["original_kbps"] else "keep at")
-        print("  {:22s} {:4d} kbps -> {} {:4.0f} kbps".format(
-            r["profile_name"], r["original_kbps"], arrow, r["best_kbps"]))
+        print("  {:22s} {:4d} kbps -> {} {:4.0f} kbps, needs muxdelay >= {}s "
+              "(today at {}s: {} warnings)".format(
+                  r["profile_name"], r["original_kbps"], arrow, r["best_kbps"],
+                  r["best_muxdelay"], tx.CBR_MUXDELAY_SECONDS, r["original_on_air_warnings"]))
     for profile_name, reason in errors:
         print("  {:22s} FAILED ({})".format(profile_name, reason))
 
@@ -427,18 +589,39 @@ def print_final_report(results, errors, run_start):
     print("ACTIONS TO BE TAKEN")
     print("-" * 62)
     changed = over_capacity + has_headroom
-    if not changed:
+    if not results:
+        print("  None - no profile was measured successfully.")
+    elif not changed:
         print("  None - every tested profile's configured bitrate is already safe.")
     else:
-        print("  Edit PROFILES in datv_tx_plus.py:")
+        print("  Edit PROFILES in dvbs2_profiles.py:")
         for r in changed:
             print("    \"{}\": video_bitrate_kbps {} -> {:.0f}".format(
                 r["profile_name"], r["original_kbps"], r["best_kbps"]))
-        print("  datv_tx_plus_fft.py has its own separate copy of PROFILES - "
-              "mirror the same changes there if you use that script too.")
+    if results:
+        # The relay has a single muxdelay for every profile, so it has to
+        # cover the most demanding one.
+        needed = max(r["best_muxdelay"] for r in results)
+        if needed != tx.CBR_MUXDELAY_SECONDS:
+            print("  Set CBR_MUXDELAY_SECONDS in datv_tx_plus.py: {} -> {} "
+                  "(largest minimum among tested profiles).".format(
+                      tx.CBR_MUXDELAY_SECONDS, needed))
+        else:
+            print("  CBR_MUXDELAY_SECONDS ({}s) already covers every tested profile.".format(
+                needed))
     if errors:
         print("  Investigate/re-run failed profile(s): {}".format(
             ", ".join(name for name, _ in errors)))
+
+
+def describe_overlays():
+    if not TRIAL_OVERLAYS:
+        return "off"
+    overlay_settings.init(PROJECT_DIR)
+    settings = overlay_settings.load()
+    return "as on air - top banner {}, bottom banner {}, marquee {}".format(
+        *("on" if settings[key] else "off"
+          for key in ("top_banner", "bottom_banner", "marquee")))
 
 
 def _trial_worker_main(argv):
@@ -452,7 +635,16 @@ def _trial_worker_main(argv):
 
 
 def main():
-    os.makedirs(WORK_DIR, exist_ok=True)
+    global RUN_DIR
+    run_stamp = time.strftime("%Y-%m-%d_%H%M")
+    RUN_DIR = os.path.join(WORK_DIR, run_stamp)
+    os.makedirs(RUN_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    # Everything printed also goes to the run's own log file.
+    sys.stdout = _Tee(sys.stdout, open(os.path.join(RUN_DIR, "tune.log"), "w"))
+    log("Run folder: {}".format(RUN_DIR))
+    log("Clips: {}".format(", ".join(os.path.basename(p) for p in TEST_CLIPS.values())))
+    log("Overlays (banners/marquee): {}".format(describe_overlays()))
 
     if PROFILES_TO_TUNE:
         unknown = [name for name in PROFILES_TO_TUNE if name not in tx.PROFILES]
@@ -485,7 +677,19 @@ def main():
         log("  Profile '{}' done in {:.0f} min.".format(
             profile_name, (time.monotonic() - profile_start) / 60.0))
 
-    print_final_report(results, errors, run_start)
+    # The summary is also saved on its own in results/ (versioned in git),
+    # so the history of what was measured survives runs/ being cleaned out.
+    summary = io.StringIO()
+    with contextlib.redirect_stdout(summary):
+        print_final_report(results, errors, run_start)
+    print(summary.getvalue(), end="")
+    results_path = os.path.join(RESULTS_DIR, "{}_tune_profiles_{}.txt".format(
+        run_stamp, "+".join(r["profile_name"] for r in results) or "none"))
+    with open(results_path, "w") as f:
+        f.write("Clips: {}\n".format(", ".join(os.path.basename(p) for p in TEST_CLIPS.values())))
+        f.write("Overlays (banners/marquee): {}\n".format(describe_overlays()))
+        f.write(summary.getvalue())
+    log("Summary saved to {}".format(results_path))
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 
 import cairo
@@ -475,6 +476,28 @@ VIDEO_END_MARGIN_SECONDS = 3.0
 TS_BITRATE_WAIT_SECONDS = 30.0
 PLUTO_CONFIG_RETRY_SECONDS = 2.0
 CBR_RELAY_PORT = 18282
+# The CBR relay's -muxdelay: how far ahead of PCR each frame's DTS is
+# scheduled. 0 made nearly every PES late ("dts < pcr, TS is invalid",
+# ~40/s on air). Offline on the Jetson's ffmpeg 3.4 (2026-09-22): 0 -> 369
+# warnings per 20s, 0.1 -> 42, 0.2+ -> 0 at sr333; sr500_fec34 still showed
+# ~2.6/s on air at 0.5 (2026-09-23). tuning/tune_profiles.py measures the
+# minimum per profile - costs this much extra end-to-end latency.
+# 1.0 (2026-09-23): a recorded 8.4 min on-air sr500_fec34 stream of a
+# detailed room scene replayed offline gave 2326 warnings at 0.5, 15 at
+# 0.7, 0 at 1.0 (live had 2182 at 0.5 - so oversized keyframes, not live
+# timing). The tuner's benchmark clip was clean at 0.5, i.e. too easy.
+CBR_MUXDELAY_SECONDS = 1.0
+
+# Diagnostic: when True, every transmission also saves the exact VBR TS it
+# sends to the CBR relay into tuning/runs/on_air/ (~30 MB per 5 min at
+# sr500), so it can be pushed through the relay offline afterwards
+# (tuning/tune_profiles.py's count_relay_warnings()). 2026-09-23: on air
+# still showed "dts < pcr" at muxdelay 0.5s where the offline benchmark
+# clip was clean - replaying the real stream tells oversized frames
+# (warnings reproduce offline) from live delivery timing (they don't). It
+# was oversized frames - see CBR_MUXDELAY_SECONDS.
+RECORD_ON_AIR_TS = False
+ON_AIR_TS_DIR = os.path.join(SCRIPT_DIR, "tuning", "runs", "on_air")
 # DATV-Red (the reference PC-side controller for this firmware) waits after
 # a tx/stream/mode change before resending the rest of the config - see its
 # "delay restore after MODE set" node (pauseType "delay", timeout 0.5s).
@@ -619,20 +642,65 @@ def start_cbr_relay(pluto_ip, ts_bitrate):
     input_url = "udp://127.0.0.1:{}?fifo_size=1000000&overrun_nonfatal=1&reuse=1".format(
         CBR_RELAY_PORT)
     output_url = "udp://{}:{}?pkt_size=1316".format(pluto_ip, PLUTO_TS_PORT)
-    command = [
+    log("🎞️  Starting CBR relay at {} bit/s...".format(ts_bitrate))
+    command = build_cbr_relay_command(input_url, output_url, ts_bitrate)
+    # repeat+: print every repeated warning instead of ffmpeg's untimed
+    # "Last message repeated N times", so log_cbr_relay_output() can place
+    # each one in time.
+    command[command.index("-loglevel") + 1] = "repeat+warning"
+    relay = subprocess.Popen(command, stderr=subprocess.PIPE, universal_newlines=True)
+    threading.Thread(target=log_cbr_relay_output, args=(relay.stderr,), daemon=True).start()
+    return relay
+
+
+def log_cbr_relay_output(stderr):
+    """Timestamp the relay's stderr into our own log. "dts < pcr" warnings
+    are condensed to one line per second (they can come ~40/s) - 2026-09-23:
+    every sr500 transmission logged ~300-390 of them whether it ran 2 or 19
+    minutes, so when they happen matters more than how many."""
+    dts_count = 0
+    dts_window_start = None
+
+    def flush_dts():
+        # Stamped with the window's own start, since the line itself is only
+        # written once the next relay line (or exit) arrives.
+        log("   ⚠️  relay: {}x 'dts < pcr' from {:.0f}ms to {:.0f}ms".format(
+            dts_count, (dts_window_start - START_TIME) * 1000,
+            (dts_window_end - START_TIME) * 1000))
+
+    for line in stderr:
+        now = time.monotonic()
+        if dts_count and now - dts_window_start >= 1.0:
+            flush_dts()
+            dts_count = 0
+        if "dts < pcr" in line:
+            if dts_count == 0:
+                dts_window_start = now
+            dts_window_end = now
+            dts_count += 1
+            continue
+        log("   relay: " + line.rstrip())
+    if dts_count:
+        flush_dts()
+
+
+def build_cbr_relay_command(input_url, output_url, ts_bitrate,
+                            muxdelay_seconds=CBR_MUXDELAY_SECONDS):
+    """The relay's ffmpeg command line - shared with tuning/tune_profiles.py,
+    which runs it on a file instead of UDP so it measures exactly what goes
+    on air."""
+    return [
         "ffmpeg", "-hide_banner", "-loglevel", "warning",
         "-fflags", "+nobuffer", "-probesize", "32768", "-analyzeduration", "1000000",
         "-i", input_url,
         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
         "-muxrate", str(ts_bitrate),
-        "-muxpreload", "0", "-muxdelay", "0",
+        "-muxpreload", "0", "-muxdelay", str(muxdelay_seconds),
         "-pcr_period", "20", "-pat_period", "0.4",
         "-streamid", "0:256", "-streamid", "1:257",
         "-mpegts_flags", "+system_b", "-flush_packets", "0",
         "-f", "mpegts", output_url,
     ]
-    log("🎞️  Starting CBR relay at {} bit/s...".format(ts_bitrate))
-    return subprocess.Popen(command)
 
 
 def ssh_connect(ip):
@@ -1065,10 +1133,21 @@ def build_pipeline_description(ip, profile, source_path=None,
     else:
         mux_sink = "filesink location={}".format(TX_OUTPUT_FILE)
 
-    parts = [
-        "mpegtsmux name=mux alignment=7 !",
-        mux_sink,
-    ]
+    parts = ["mpegtsmux name=mux alignment=7 !"]
+    if TX_OUTPUT == "pluto" and RECORD_ON_AIR_TS:
+        os.makedirs(ON_AIR_TS_DIR, exist_ok=True)
+        record_path = os.path.join(ON_AIR_TS_DIR, "{}_{}x{}_{}kbps.ts".format(
+            time.strftime("%Y-%m-%d_%H%M%S"), width, height, profile["video_bitrate_kbps"]))
+        log("🧪 Recording the relay's input to {}".format(record_path))
+        # The file branch never blocks the on-air branch (own queue,
+        # sync=false) - both get the identical muxed packets.
+        parts += [
+            "tee name=ts_tee",
+            "ts_tee. ! queue !", mux_sink,
+            "ts_tee. ! queue ! filesink location={} sync=false async=false".format(record_path),
+        ]
+    else:
+        parts.append(mux_sink)
 
     if overlay_enabled:
         top_bar_visible = top_bar_enabled

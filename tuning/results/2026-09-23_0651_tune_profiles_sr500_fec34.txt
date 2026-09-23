@@ -1,0 +1,16 @@
+Clips: camera_clip_640x360_90s.mkv, camera_clip_960x540_90s.mkv, camera_clip_1280x720_90s.mkv
+
+##############################################################
+SUMMARY - all profiles (10 min total)
+##############################################################
+  sr500_fec34             575 kbps -> keep at  575 kbps, needs muxdelay >= 0.5s (today at 0.5s: 0 warnings)
+
+FINDINGS
+--------------------------------------------------------------
+  1 of 1 profiles tested successfully (0 failed).
+  1 profile(s) already at their safe optimum: sr500_fec34
+
+ACTIONS TO BE TAKEN
+--------------------------------------------------------------
+  None - every tested profile's configured bitrate is already safe.
+  CBR_MUXDELAY_SECONDS (0.5s) already covers every tested profile.

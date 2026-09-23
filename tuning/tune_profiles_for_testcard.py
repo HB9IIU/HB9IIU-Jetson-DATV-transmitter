@@ -62,11 +62,19 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402
 
-import datv_tx_plus as tx
-
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-WORK_DIR = os.path.join(SCRIPT_DIR, "tuning")
-FFPROBE = os.path.join(SCRIPT_DIR, "ffmpeg-static", "ffprobe")
+# This script lives in tuning/, one level below the project root that holds
+# datv_tx_plus.py - put the root on sys.path so the import below finds it.
+PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, PROJECT_DIR)
+
+import datv_tx_plus as tx  # noqa: E402
+
+WORK_DIR = os.path.join(SCRIPT_DIR, "runs")
+# ffmpeg-static/ isn't on the Jetson (checked 2026-09-23) - fall back to the
+# system ffprobe rather than failing on a missing path.
+_STATIC_FFPROBE = os.path.join(PROJECT_DIR, "ffmpeg-static", "ffprobe")
+FFPROBE = _STATIC_FFPROBE if os.path.isfile(_STATIC_FFPROBE) else "ffprobe"
 
 # Which profile(s) to tune - edit this directly, then just hit Run. Starts
 # with the profiles the testcard-at-720p hypothesis (see dvbs2_profiles.py)
