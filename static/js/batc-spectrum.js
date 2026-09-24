@@ -12,7 +12,8 @@
   const DISPLAY_FLOOR = 0.12;
   const DISPLAY_CEILING = 0.58;
   const CHANNEL_CENTERS = Array.from({ length: 14 }, (_, index) => 10492.75 + index * 0.5);
-  const TRANSPONDER_OFFSET_MHZ = 8090;
+  // QO-100 WB: 2400.0 MHz uplink -> 10489.5 MHz downlink (e.g. 2403.25 -> 10492.75)
+  const TRANSPONDER_OFFSET_MHZ = 8089.5;
   const canvas = document.querySelector('#batc-spectrum-canvas');
   const status = document.querySelector('#batc-status');
   const frequencyInput = document.querySelector('#frequency');

@@ -70,6 +70,27 @@ PROFILES = {
     # same failure mode as sr125 at 640x360.
     "sr250_fec34_720p": {"symbol_rate": 250000, "fec": "3/4", "resolution": (1280, 720),
                           "video_bitrate_kbps": 228, "audio_bitrate_kbps": 32},
+    # Camera-only profiles (2026-09-24), one resolution step up per symbol
+    # rate, inspired by OBS + Easy DATV (which ran 1600x900 on SR500 3/4)
+    # once the encoder got a 4 s GOP / 4 refs / slow preset - see ENCODER_*
+    # in datv_tx_plus.py. 1280x720 is the ceiling: 1600x900 needs a 1080p
+    # camera capture, which the Nano's CPU couldn't decode/scale in real time
+    # (on-air test: frozen picture, ever-growing alsasrc drops). Bitrates are
+    # tuned by tune_profiles.py with the new encoder settings on the
+    # room-scene camera clip (tuning/results/2026-09-24_1602_*.txt): all six
+    # relay-clean at muxdelay 1.0s; sr500 stayed at its carried-over values.
+    "sr250_fec23_camera": {"symbol_rate": 250000, "fec": "2/3", "resolution": (960, 540),
+                           "video_bitrate_kbps": 196, "audio_bitrate_kbps": 32},
+    "sr250_fec34_camera": {"symbol_rate": 250000, "fec": "3/4", "resolution": (960, 540),
+                           "video_bitrate_kbps": 233, "audio_bitrate_kbps": 32},
+    "sr333_fec23_camera": {"symbol_rate": 333000, "fec": "2/3", "resolution": (1280, 720),
+                           "video_bitrate_kbps": 298, "audio_bitrate_kbps": 32},
+    "sr333_fec34_camera": {"symbol_rate": 333000, "fec": "3/4", "resolution": (1280, 720),
+                           "video_bitrate_kbps": 350, "audio_bitrate_kbps": 32},
+    "sr500_fec23_camera": {"symbol_rate": 500000, "fec": "2/3", "resolution": (1280, 720),
+                           "video_bitrate_kbps": 498, "audio_bitrate_kbps": 32},
+    "sr500_fec34_camera": {"symbol_rate": 500000, "fec": "3/4", "resolution": (1280, 720),
+                           "video_bitrate_kbps": 575, "audio_bitrate_kbps": 32},
 }
 
 # (symbol_rate_ksps, fec) -> which PROFILES entry to use, one table per
@@ -84,9 +105,13 @@ PROFILES = {
 #
 # Testcard mode always prefers the highest resolution confirmed safe on
 # real testcard content by tune_profiles_for_testcard.py (see
-# testcard_summary.txt); camera/video mode always uses the plain
-# (non-"_720p") base entry, since real motion content measured better at
-# the lower resolution (see tune_profiles.py).
+# testcard_summary.txt). Video mode uses the plain (non-"_720p") base
+# entry, since real motion content measured better at the lower resolution
+# with the old encoder settings (see tune_profiles.py) - and its
+# preprocessed_<W>x<H>/ files only exist at 640x360/960x540. Camera mode
+# was split off (2026-09-24) onto the higher-resolution "_camera" entries;
+# video can follow by pointing VIDEO_PROFILE_NAMES at them once
+# preprocessed files exist at those resolutions.
 TESTCARD_PROFILE_NAMES = {
     (250, "2/3"): "sr250_fec23",        # 640x360 - no 720p option exists
     (250, "3/4"): "sr250_fec34_720p",   # 1280x720
@@ -95,7 +120,15 @@ TESTCARD_PROFILE_NAMES = {
     (500, "2/3"): "sr500_fec23_720p",   # 1280x720
     (500, "3/4"): "sr500_fec34_720p",   # 1280x720
 }
-CAMERA_VIDEO_PROFILE_NAMES = {
+CAMERA_PROFILE_NAMES = {
+    (250, "2/3"): "sr250_fec23_camera",  # 960x540
+    (250, "3/4"): "sr250_fec34_camera",  # 960x540
+    (333, "2/3"): "sr333_fec23_camera",  # 1280x720
+    (333, "3/4"): "sr333_fec34_camera",  # 1280x720
+    (500, "2/3"): "sr500_fec23_camera",  # 1280x720
+    (500, "3/4"): "sr500_fec34_camera",  # 1280x720
+}
+VIDEO_PROFILE_NAMES = {
     (250, "2/3"): "sr250_fec23",
     (250, "3/4"): "sr250_fec34",
     (333, "2/3"): "sr333_fec23",

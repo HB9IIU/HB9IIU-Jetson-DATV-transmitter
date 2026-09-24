@@ -108,11 +108,13 @@ else:
 # Which profile(s) to tune - edit this directly, then just hit Run (see
 # module docstring for why this is a constant, not a command-line
 # argument). Empty list = every profile in PROFILES (multi-hour).
-# 2026-09-23 overnight run: the 6 camera/video profiles against the new,
-# harder room-scene benchmark clip (the testcard "_720p" profiles don't
-# carry camera content, so they're left out).
-PROFILES_TO_TUNE = ["sr250_fec23", "sr250_fec34", "sr333_fec23", "sr333_fec34",
-                    "sr500_fec23", "sr500_fec34"]
+# 2026-09-24: the 6 camera profiles (higher resolutions, new encoder
+# settings) against the room-scene benchmark clip. The 6 video-mode
+# profiles (same names without "_camera") were last tuned 2026-09-23 with
+# the old encoder settings and need a re-run too.
+PROFILES_TO_TUNE = ["sr250_fec23_camera", "sr250_fec34_camera",
+                    "sr333_fec23_camera", "sr333_fec34_camera",
+                    "sr500_fec23_camera", "sr500_fec34_camera"]
 
 # Two content types tested so far turned out to matter (2026-09-07 finding:
 # real encoder overshoot depends on motion complexity, not just SR/FEC) - a

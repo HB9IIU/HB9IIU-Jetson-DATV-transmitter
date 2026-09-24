@@ -64,7 +64,7 @@ from gi.repository import Gst  # noqa: E402  (must follow gi.require_version)
 
 from dvbs2_profiles import (
     PROFILES, FRAME, PILOTS, calculate_dvbs2_ts_bitrate,
-    TESTCARD_PROFILE_NAMES, CAMERA_VIDEO_PROFILE_NAMES)
+    TESTCARD_PROFILE_NAMES, CAMERA_PROFILE_NAMES, VIDEO_PROFILE_NAMES)
 
 os.environ["TZ"] = "UTC"  # clockoverlay has no UTC option, only local time
 time.tzset()
@@ -144,7 +144,7 @@ def draw_marquee(overlay, cr, timestamp, duration, width, height, state):
 
 # Pick a symbol rate + FEC - the actual profile name (and therefore
 # resolution/bitrate) is resolved automatically below from these two plus
-# SOURCE, via TESTCARD_PROFILE_NAMES / CAMERA_VIDEO_PROFILE_NAMES. No
+# SOURCE, via TESTCARD/CAMERA/VIDEO_PROFILE_NAMES. No
 # profile-name string to type or memorize here anymore, and no risk of the
 # old "multiple uncommented PROFILE = lines, last one silently wins"
 # confusion, since there's only one assignment each for SR/FEC/SOURCE.
@@ -154,22 +154,22 @@ FEC = "2/3"    # DVB-S2 FEC: "2/3" or "3/4"
 SOURCE = "video"  # "camera" (live cam+mic), "video" (pick+loop a pre-processed video), or "testcard" (pick+loop a static image from testcards/)
 
 # (SR, FEC) -> name of the entry to use in PROFILES, one table per SOURCE
-# family - see dvbs2_profiles.py's TESTCARD_PROFILE_NAMES/
-# CAMERA_VIDEO_PROFILE_NAMES for the reasoning (shared with datv_engine.py,
+# family - see dvbs2_profiles.py's TESTCARD/CAMERA/VIDEO_PROFILE_NAMES
+# for the reasoning (shared with datv_engine.py,
 # which needs the exact same lookup for the web UI's SR/FEC selectors -
 # kept in one place so the two can't silently drift apart again).
 _PROFILE_NAMES_BY_SOURCE = {
     "testcard": TESTCARD_PROFILE_NAMES,
-    "camera": CAMERA_VIDEO_PROFILE_NAMES,
-    "video": CAMERA_VIDEO_PROFILE_NAMES,
+    "camera": CAMERA_PROFILE_NAMES,
+    "video": VIDEO_PROFILE_NAMES,
 }
 try:
     PROFILE = _PROFILE_NAMES_BY_SOURCE[SOURCE][(SR, FEC)]
 except KeyError:
     raise SystemExit(
         "No profile for SR={} FEC={} SOURCE={} - check SR/FEC/SOURCE above "
-        "match a real entry in TESTCARD_PROFILE_NAMES/"
-        "CAMERA_VIDEO_PROFILE_NAMES.".format(SR, FEC, SOURCE))
+        "match a real entry in TESTCARD/CAMERA/VIDEO_PROFILE_NAMES "
+        "in dvbs2_profiles.py.".format(SR, FEC, SOURCE))
 
 TX_OUTPUT = "pluto"  # "pluto" (transmit) or "file" (write the muxed TS to TX_OUTPUT_FILE for local inspection, no Pluto/MQTT needed)
 TX_OUTPUT_FILE = "debug_output.ts"
@@ -383,6 +383,15 @@ SSH_USERNAME = "root"
 SSH_PASSWORD = "analog"
 TX_LO_POWERDOWN_PATH = "/sys/bus/iio/devices/iio:device0/out_altvoltage1_TX_LO_powerdown"
 FPS = 25
+# nvv4l2h265enc quality settings, modelled on a captured OBS + Easy DATV
+# stream (2026-09-24, SR500 3/4) that looked clearly better on air: a
+# keyframe every 4 s (not every 1 s - each keyframe costs ~5x a P-frame)
+# and 4 reference frames. idrinterval matches so every keyframe is a clean
+# IDR a receiver can lock onto. All options confirmed on the Nano via
+# gst-inspect-1.0 (num-B-Frames is Xavier-only, so none).
+ENCODER_KEYFRAME_INTERVAL = 4 * FPS
+ENCODER_PRESET_LEVEL = 4  # 1=UltraFast (encoder default) ... 4=Slow
+ENCODER_REF_FRAMES = 4
 PLUTO_TS_PORT = 8282
 IIOD_PORT = 30431
 USB_DEFAULT_IP = "192.168.2.1"
@@ -1054,6 +1063,15 @@ def select_audio_device():
     return alsa_id
 
 
+def camera_capture_size(width, height):
+    """Camera capture mode for a given output resolution - always 1280x720
+    (the C920's MJPEG / imx219's NV12 mode at 30 fps), scaled down from
+    there. 1280x720 is the highest profile resolution: a 1920x1080 capture
+    for 1600x900 was tried (2026-09-24) and the Nano's CPU couldn't keep up.
+    Shared with tuning/record_benchmark_clip.py."""
+    return 1280, 720
+
+
 def build_pipeline_description(ip, profile, source_path=None,
                                 top_bar_enabled=True, bottom_bar_enabled=True):
     # Compositor/bars branch is needed if either bar OR the marquee wants to
@@ -1204,13 +1222,17 @@ def build_pipeline_description(ip, profile, source_path=None,
     parts += [
         "nvvidconv ! video/x-raw(memory:NVMM),format=NV12 !",
         "queue !",
-        "nvv4l2h265enc bitrate={} insert-sps-pps=true iframeinterval={} !".format(
-            profile["video_bitrate_kbps"] * 1000, FPS),
+        "nvv4l2h265enc bitrate={} insert-sps-pps=true iframeinterval={} idrinterval={}".format(
+            profile["video_bitrate_kbps"] * 1000, ENCODER_KEYFRAME_INTERVAL,
+            ENCODER_KEYFRAME_INTERVAL),
+        "preset-level={} num-Ref-Frames={} maxperf-enable=true !".format(
+            ENCODER_PRESET_LEVEL, ENCODER_REF_FRAMES),
         "h265parse config-interval=1 !",
         "queue ! mux.",
     ]
 
     if SOURCE == "camera":
+        capture_width, capture_height = camera_capture_size(width, height)
         if CAMERA_IS_CSI:
             # nvarguscamerasrc doesn't take a /dev/videoN path (CAMERA_DEVICE is
             # unused here) - it addresses sensors by Argus sensor-id, and this
@@ -1223,7 +1245,8 @@ def build_pipeline_description(ip, profile, source_path=None,
             # a few lines down.
             parts += [
                 "nvarguscamerasrc sensor-id=0 !",
-                "video/x-raw(memory:NVMM),width=1280,height=720,framerate=30/1,format=NV12 !",
+                "video/x-raw(memory:NVMM),width={},height={},framerate=30/1,format=NV12 !".format(
+                    capture_width, capture_height),
                 "nvvidconv flip-method={} !".format(CSI_FLIP_METHOD),
                 "videorate ! video/x-raw,framerate={}/1 !".format(FPS),
                 "videoscale ! video/x-raw,width={},height={} !".format(width, height),
@@ -1232,7 +1255,8 @@ def build_pipeline_description(ip, profile, source_path=None,
         else:
             parts += [
                 "v4l2src device={} do-timestamp=true !".format(CAMERA_DEVICE),
-                "image/jpeg,width=1280,height=720,framerate=30/1 !",
+                "image/jpeg,width={},height={},framerate=30/1 !".format(
+                    capture_width, capture_height),
                 "jpegdec !",
                 "videorate ! video/x-raw,framerate={}/1 !".format(FPS),
                 "videoscale ! video/x-raw,width={},height={} !".format(width, height),

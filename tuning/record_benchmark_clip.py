@@ -49,9 +49,10 @@ MASTER_PATH = os.path.join(CLIPS_DIR, "camera_master_raw.mkv")
 DURATION_SECONDS = 90
 WARMUP_SECONDS = 10
 # Same resolutions (and file names) as tune_profiles.py's TEST_CLIPS_CAMERA.
+# 640x360 only matters for the video-mode profiles now.
 RESOLUTIONS = [(640, 360), (960, 540), (1280, 720)]
-# Matches the on-air USB camera caps in datv_tx_plus.build_pipeline_description().
-CAPTURE_SIZE = "1280x720"
+# Matches the on-air camera capture mode (datv_tx_plus.camera_capture_size()).
+CAPTURE_SIZE = "{}x{}".format(*tx.camera_capture_size(1280, 720))
 CAPTURE_FPS = 30
 
 # System ffmpeg (3.4): the Ubuntu build has the v4l2 and alsa inputs this

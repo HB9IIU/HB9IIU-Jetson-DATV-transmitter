@@ -16,7 +16,7 @@ except ImportError:
 
 from camera_preview import stop_active_preview, stream_camera
 from datv_engine import DatvEngine
-from dvbs2_profiles import CAMERA_VIDEO_PROFILE_NAMES, PROFILES
+from dvbs2_profiles import VIDEO_PROFILE_NAMES, PROFILES
 from pluto_fft_bridge import get_latest_frame, start_background_reader
 import overlay_settings
 import pa_relay
@@ -350,12 +350,12 @@ def detect_testcards():
 
 def video_folder_for_sr_fec(symbol_rate, fec):
     """Which preprocessed_<W>x<H>/ folder holds videos for this SR/FEC -
-    the same resolution camera/video mode's real transmission uses (see
-    CAMERA_VIDEO_PROFILE_NAMES in dvbs2_profiles.py), not a fixed
+    the same resolution video mode's real transmission uses (see
+    VIDEO_PROFILE_NAMES in dvbs2_profiles.py), not a fixed
     hardcoded folder. Returns None for an unsupported SR/FEC combination.
     """
     try:
-        profile_name = CAMERA_VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
+        profile_name = VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
     except KeyError:
         return None
     width, height = PROFILES[profile_name]["resolution"]

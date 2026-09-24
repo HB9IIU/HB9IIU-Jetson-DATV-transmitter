@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-from dvbs2_profiles import CAMERA_VIDEO_PROFILE_NAMES, TESTCARD_PROFILE_NAMES
+from dvbs2_profiles import CAMERA_PROFILE_NAMES, TESTCARD_PROFILE_NAMES, VIDEO_PROFILE_NAMES
 import usb_video_key
 
 LOG_TAIL_CHARS = 4000
@@ -25,10 +25,10 @@ ORPHAN_STOP_TIMEOUT_SECONDS = 8
 GAIN_MIN_DB = -60.0
 GAIN_MAX_DB = 0.0
 # Matches the selectable uplink range in static/js/batc-spectrum.js
-# (START_MHZ/END_MHZ minus TRANSPONDER_OFFSET_MHZ: 10490.5-8090 to
-# 10499.5-8090) - the actual QO-100 wideband transponder uplink span.
-FREQUENCY_MIN_HZ = 2400500000
-FREQUENCY_MAX_HZ = 2409500000
+# (START_MHZ/END_MHZ minus TRANSPONDER_OFFSET_MHZ: 10490.5-8089.5 to
+# 10499.5-8089.5) - the actual QO-100 wideband transponder uplink span.
+FREQUENCY_MIN_HZ = 2401000000
+FREQUENCY_MAX_HZ = 2410000000
 
 
 def _validate_gain(gain_db):
@@ -208,7 +208,7 @@ class DatvEngine(object):
                       gain_db, frequency_hz, top_banner, top_banner_text, bottom_banner,
                       marquee, marquee_text, callsign):
         try:
-            profile_key = CAMERA_VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
+            profile_key = CAMERA_PROFILE_NAMES[(symbol_rate, fec)]
         except KeyError:
             raise ValueError("Unsupported SR/FEC combination")
         _validate_gain(gain_db)
@@ -236,7 +236,7 @@ class DatvEngine(object):
                      top_banner, top_banner_text, bottom_banner, marquee, marquee_text,
                      callsign):
         try:
-            profile_key = CAMERA_VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
+            profile_key = VIDEO_PROFILE_NAMES[(symbol_rate, fec)]
         except KeyError:
             raise ValueError("Unsupported SR/FEC combination")
         _validate_gain(gain_db)
