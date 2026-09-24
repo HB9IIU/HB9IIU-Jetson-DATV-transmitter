@@ -108,7 +108,11 @@ else:
 # Which profile(s) to tune - edit this directly, then just hit Run (see
 # module docstring for why this is a constant, not a command-line
 # argument). Empty list = every profile in PROFILES (multi-hour).
-PROFILES_TO_TUNE = ["sr500_fec34"]
+# 2026-09-23 overnight run: the 6 camera/video profiles against the new,
+# harder room-scene benchmark clip (the testcard "_720p" profiles don't
+# carry camera content, so they're left out).
+PROFILES_TO_TUNE = ["sr250_fec23", "sr250_fec34", "sr333_fec23", "sr333_fec34",
+                    "sr500_fec23", "sr500_fec34"]
 
 # Two content types tested so far turned out to matter (2026-09-07 finding:
 # real encoder overshoot depends on motion complexity, not just SR/FEC) - a
@@ -151,10 +155,12 @@ TRIAL_OVERLAYS = True
 
 # Relay -muxdelay values tried per trial, smallest first (see
 # datv_tx_plus.CBR_MUXDELAY_SECONDS). A trial only counts as safe if one of
-# these gives ZERO "dts < pcr" warnings - capping at 1.0s keeps the extra
-# end-to-end latency sensible rather than hiding a real overload behind a
-# huge buffer.
-MUXDELAY_CANDIDATES = [0.2, 0.3, 0.5, 0.7, 1.0]
+# these gives ZERO "dts < pcr" warnings. 1.5s added 2026-09-23: the on-air
+# room scene already needed 1.0s, so a harder clip may need a little more -
+# capping there still keeps the extra end-to-end latency sensible rather
+# than hiding a real overload behind a huge buffer (past 1.5s the tuner
+# lowers the bitrate instead).
+MUXDELAY_CANDIDATES = [0.2, 0.3, 0.5, 0.7, 1.0, 1.5]
 RELAY_TIMEOUT_SECONDS = 120
 
 BISECTION_TOLERANCE_KBPS = 5
@@ -559,16 +565,16 @@ def print_final_report(results, errors, run_start):
     print("  {} of {} profiles tested successfully ({} failed).".format(
         len(results), len(results) + len(errors), len(errors)))
     if over_capacity:
-        overshoots = [(r["original_real_bps"] - r["capacity_bps"]) / r["capacity_bps"] * 100
-                      for r in over_capacity]
-        print("  {} profile(s) are configured OVER their real DVB-S2 capacity "
-              "on real motion content:".format(len(over_capacity)))
-        for r, pct in zip(over_capacity, overshoots):
-            print("    - {}: real output {:.1f}% over capacity ({} vs {} bit/s)".format(
-                r["profile_name"], pct, r["original_real_bps"], int(r["capacity_bps"])))
-        print("  Overshoot is NOT a fixed ratio across profiles (ranged {:.0f}%-{:.0f}% "
-              "here) - confirms this needs per-profile measurement, not one guessed "
-              "correction factor.".format(min(overshoots), max(overshoots)))
+        # "Too high" means over the SAFETY_MARGIN ceiling or no clean relay
+        # muxdelay - not necessarily over the capacity itself, so show the
+        # real share of capacity rather than calling it an overshoot.
+        print("  {} profile(s) are configured too high on real motion content "
+              "(over the {:.0f}% safety limit, or relay not clean):".format(
+                  len(over_capacity), SAFETY_MARGIN * 100))
+        for r in over_capacity:
+            print("    - {}: real output {:.1f}% of capacity ({} of {} bit/s)".format(
+                r["profile_name"], r["original_real_bps"] / r["capacity_bps"] * 100,
+                r["original_real_bps"], int(r["capacity_bps"])))
     if has_headroom:
         print("  {} profile(s) have real spare capacity and could go higher for "
               "better quality:".format(len(has_headroom)))
@@ -602,13 +608,17 @@ def print_final_report(results, errors, run_start):
         # The relay has a single muxdelay for every profile, so it has to
         # cover the most demanding one.
         needed = max(r["best_muxdelay"] for r in results)
-        if needed != tx.CBR_MUXDELAY_SECONDS:
+        # Only ever suggest raising it: a clip is at best an estimate of
+        # real content - 2026-09-23 a recorded on-air room scene still
+        # needed 1.0s where the benchmark clip was clean at 0.7s.
+        if needed > tx.CBR_MUXDELAY_SECONDS:
             print("  Set CBR_MUXDELAY_SECONDS in datv_tx_plus.py: {} -> {} "
                   "(largest minimum among tested profiles).".format(
                       tx.CBR_MUXDELAY_SECONDS, needed))
         else:
-            print("  CBR_MUXDELAY_SECONDS ({}s) already covers every tested profile.".format(
-                needed))
+            print("  CBR_MUXDELAY_SECONDS ({}s) already covers every tested profile "
+                  "(clip needs >= {}s; keep the margin for real content).".format(
+                      tx.CBR_MUXDELAY_SECONDS, needed))
     if errors:
         print("  Investigate/re-run failed profile(s): {}".format(
             ", ".join(name for name, _ in errors)))

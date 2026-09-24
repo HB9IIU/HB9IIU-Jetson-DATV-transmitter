@@ -25,6 +25,11 @@ import math
 # specific to this profile, since the very next profile at the same
 # resolution ran cleanly).
 #
+# Re-checked 2026-09-23 for the 6 camera/video profiles against a harder
+# room-scene benchmark clip, with on-air overlays and the exact CBR relay
+# (tuning/results/2026-09-23_1718_*.txt): only sr250_fec34 changed, 233 ->
+# 228 (at 233 it used 98.0% of capacity, over the 97% safety limit).
+#
 # Resolution/bitrate choice per symbol rate/FEC also comes from real testing
 # (not guesses): 960x540 was found to look noticeably better than 1280x720
 # at the same bitrate (fewer compression mosaics on motion), and lower
@@ -34,7 +39,7 @@ PROFILES = {
     "sr250_fec23": {"symbol_rate": 250000, "fec": "2/3", "resolution": (640, 360),
                     "video_bitrate_kbps": 191, "audio_bitrate_kbps": 32},
     "sr250_fec34": {"symbol_rate": 250000, "fec": "3/4", "resolution": (640, 360),
-                    "video_bitrate_kbps": 233, "audio_bitrate_kbps": 32},
+                    "video_bitrate_kbps": 228, "audio_bitrate_kbps": 32},
     "sr333_fec23": {"symbol_rate": 333000, "fec": "2/3", "resolution": (960, 540),
                     "video_bitrate_kbps": 292, "audio_bitrate_kbps": 32},
     "sr333_fec34": {"symbol_rate": 333000, "fec": "3/4", "resolution": (960, 540),

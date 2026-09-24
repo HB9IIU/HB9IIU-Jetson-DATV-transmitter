@@ -1,0 +1,27 @@
+Clips: camera_clip_640x360_90s.mkv, camera_clip_960x540_90s.mkv, camera_clip_1280x720_90s.mkv
+Overlays (banners/marquee): as on air - top banner off, bottom banner on, marquee on
+
+##############################################################
+SUMMARY - all profiles (82 min total)
+##############################################################
+  sr250_fec23             191 kbps -> keep at  191 kbps, needs muxdelay >= 0.5s (today at 1.0s: 0 warnings)
+  sr250_fec34             233 kbps -> LOWER to  228 kbps, needs muxdelay >= 0.7s (today at 1.0s: 0 warnings)
+  sr333_fec23             292 kbps -> keep at  292 kbps, needs muxdelay >= 0.7s (today at 1.0s: 0 warnings)
+  sr333_fec34             342 kbps -> keep at  342 kbps, needs muxdelay >= 0.7s (today at 1.0s: 0 warnings)
+  sr500_fec23             498 kbps -> keep at  498 kbps, needs muxdelay >= 0.7s (today at 1.0s: 0 warnings)
+  sr500_fec34             575 kbps -> keep at  575 kbps, needs muxdelay >= 0.7s (today at 1.0s: 0 warnings)
+
+FINDINGS
+--------------------------------------------------------------
+  6 of 6 profiles tested successfully (0 failed).
+  1 profile(s) are configured OVER their real DVB-S2 capacity on real motion content:
+    - sr250_fec34: real output -2.0% over capacity (355594 vs 363019 bit/s)
+  Overshoot is NOT a fixed ratio across profiles (ranged -2%--2% here) - confirms this needs per-profile measurement, not one guessed correction factor.
+  5 profile(s) already at their safe optimum: sr250_fec23, sr333_fec23, sr333_fec34, sr500_fec23, sr500_fec34
+  Quality cost of the corrections: -0.00 dB PSNR on average (max -0.00 dB) - consistently small.
+
+ACTIONS TO BE TAKEN
+--------------------------------------------------------------
+  Edit PROFILES in dvbs2_profiles.py:
+    "sr250_fec34": video_bitrate_kbps 233 -> 228
+  Set CBR_MUXDELAY_SECONDS in datv_tx_plus.py: 1.0 -> 0.7 (largest minimum among tested profiles).
