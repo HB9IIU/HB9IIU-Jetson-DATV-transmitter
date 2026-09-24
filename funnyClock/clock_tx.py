@@ -14,6 +14,7 @@ Run:  python3 clock_tx.py   (Ctrl+C stops)
 
 import math
 import os
+import signal
 import subprocess
 import tempfile
 import time
@@ -350,6 +351,11 @@ def ask_symbol_rate():
 
 def main():
     global tone_labels, SR, PROFILE
+    # Both signals stop like Ctrl+C (PTT off, relay stopped): SIGTERM from
+    # kill/timeout, and SIGINT even when started in the background, where
+    # the shell would otherwise leave it ignored.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     SR = ask_symbol_rate()
     PROFILE = tx.PROFILES[(SR, FEC)]
     tx.log("🎛️  SR={} FEC={} {}x{} video={}kbps".format(

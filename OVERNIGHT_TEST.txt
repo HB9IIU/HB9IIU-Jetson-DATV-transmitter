@@ -1,0 +1,74 @@
+OVERNIGHT TEST - tune all camera/video profiles against a realistic scene
+==========================================================================
+Written 2026-09-23. Read this when you come back to the tuning work.
+
+
+WHERE WE ARE
+------------
+- The on-air "dts < pcr, TS is invalid" warnings are FIXED for sr500_fec34:
+  the CBR relay's muxdelay is now 1.0 s (datv_tx_plus.py,
+  CBR_MUXDELAY_SECONDS). Verified: 5.6 min on air of the difficult room
+  scene -> 0 warnings (before, at 0.5 s: ~2200).
+- Cause: on a detailed/noisy picture (your room) the encoder's keyframes
+  are too big to fit the relay's buffer in time. Not a timing problem on
+  the Jetson - proven by recording the on-air stream and replaying it
+  offline (same warnings).
+- Problem left: the benchmark clip in tuning/clips/ is TOO EASY (clean at
+  0.5 s where the real room scene needs 1.0 s), so the tuner's results are
+  too optimistic. The other 5 profiles have never been checked against a
+  realistic scene.
+
+
+WHAT WE NEED TO DO (in this order)
+----------------------------------
+
+STEP 1 - Re-record the benchmark clip from the difficult room scene
+  - Point the C920 at the normal room scene (the one that gave many
+    warnings) - same light as when you usually transmit.
+  - No transmission may be running (the camera can only be used once).
+  - In PowerShell on the PC:
+
+      ssh -t daniel@jetson-nano.local "cd jetson-stream-panel && .venv/bin/python3 tuning/record_benchmark_clip.py"
+
+  - Takes ~2 minutes. The old clips are kept in tuning/clips/old_<date>/.
+
+STEP 2 - Tell Claude to prepare the overnight run
+  Claude will:
+  - set PROFILES_TO_TUNE in tuning/tune_profiles.py to the 6 camera/video
+    profiles (sr250_fec23, sr250_fec34, sr333_fec23, sr333_fec34,
+    sr500_fec23, sr500_fec34) - an empty list would also tune the testcard
+    profiles, which don't use camera content;
+  - consider adding 1.5 s to MUXDELAY_CANDIDATES (today's max is 1.0 s -
+    if a profile isn't clean even at 1.0 s the tuner lowers its bitrate
+    instead);
+  - upload to the Jetson and check it.
+
+STEP 3 - Start the run YOURSELF (runs on even if you close the window)
+  - No transmission, and stop other scripts (e.g. funnyClock/clock.py).
+  - In PowerShell on the PC:
+
+      ssh daniel@jetson-nano.local "cd jetson-stream-panel && nohup .venv/bin/python3 -u tuning/tune_profiles.py > tuning/runs/console.log 2>&1 &"
+
+  - Expected duration: ~15 min per profile -> ~1.5-2 hours for all 6.
+  - Watch progress (Ctrl+C only stops watching, not the test):
+
+      ssh daniel@jetson-nano.local "tail -f jetson-stream-panel/tuning/runs/console.log"
+
+STEP 4 - Next morning: tell Claude "the overnight run is done"
+  Claude reads the summary (tuning/results/<date>_tune_profiles_....txt)
+  and proposes the changes:
+  - new video_bitrate_kbps per profile in dvbs2_profiles.py (if any);
+  - CBR_MUXDELAY_SECONDS in datv_tx_plus.py (the largest one any profile
+    needs).
+  Then a short on-air check of one or two changed profiles, and commit.
+
+
+USEFUL TO KNOW
+--------------
+- Restart the web app: Setup page -> bottom -> "Restart app".
+- Transmission log with timestamped relay warnings: web_stream.log on the
+  Jetson (Claude can read it).
+- To record the on-air stream again for an offline check: set
+  RECORD_ON_AIR_TS = True in datv_tx_plus.py (files go to
+  tuning/runs/on_air/, ~30-45 MB per 5 min) - switch it off afterwards.
+- More details on the tuning folder: tuning/README.md
