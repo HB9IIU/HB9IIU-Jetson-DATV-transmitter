@@ -4,6 +4,11 @@ Rebuilding a DATV (amateur TV over satellite) streaming setup, one small
 working step at a time. `old_project_TO_DELETE/` holds the previous,
 more complex attempt — kept around for reference until it's no longer needed.
 
+The Stage 0–2 scripts described below (`stage0.py`, `stage1.py`,
+`datv_tx.py`) were superseded by `datv_tx_plus.py` and the web app and
+removed on 2026-09-25 — they're still in the git history. The sections are
+kept as a record of what each step proved.
+
 ## Stage 0 — `stage0.py`
 
 **What it proves:** the Jetson can encode video with its hardware encoder
@@ -138,3 +143,18 @@ left alone since it's purely a display label with no functional effect.
    see Stage 2 above — confirmed with a real receiver lock, picture, and audio)
 4. Wrap it in a minimal web control endpoint
 5. Build a UI on top
+
+## Tools — `tools/`
+
+Standalone diagnostics, not used by the app:
+
+- `pluto_mqtt_diagnostic.py` — sends the PlutoDVB2 MQTT configuration
+  commands one at a time (RF muted) and stops at the first one that isn't
+  acknowledged.
+- `rf_hardware_test.py` — steps the Pluto's bare TX LO over a few
+  frequencies (no DVB-S2), to check the RF chain on a spectrum analyzer.
+- `lime_cli_test.py` — LimeSDR Mini experiment: C920 camera + mic through
+  DATV-Linux's `dvbs2_tx`, using the camera profiles from `dvbs2_profiles.py`.
+
+The PlutoDVB2 firmware source cited in code comments lives locally in
+`reference/pluto-ori/` (git-ignored; upstream is F5OEO's pluto-ori-ps).

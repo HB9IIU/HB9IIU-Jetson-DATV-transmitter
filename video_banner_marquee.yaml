@@ -62,8 +62,10 @@ default:
     # it doesn't jump around with the text's own changing width/position) -
     # set to null for no background at all, plain text over the picture.
     bg_rgba: [0.0, 0.0, 0.0, 0.75]
-    # y_px = vertical position from the top of the frame. speed_px_per_second
-    # and font_size/padding all scale with resolution.
+    # The band spans y_px - bg_padding_top_px down to the font's line height
+    # + bg_padding_bottom_px below that; the text is centred vertically in
+    # the visible part of the band automatically (since 2026-09-25).
+    # speed_px_per_second and font_size/padding all scale with resolution.
     640x360:  {y_px: 0, font_size: 13, speed_px_per_second: 30.0, bg_padding_top_px: 4, bg_padding_bottom_px: 3}
     960x540:  {y_px: 8, font_size: 20, speed_px_per_second: 30.0, bg_padding_top_px: 6, bg_padding_bottom_px: 4}
     1280x720: {y_px: 4, font_size: 27, speed_px_per_second: 30.0, bg_padding_top_px: 8, bg_padding_bottom_px: 5}

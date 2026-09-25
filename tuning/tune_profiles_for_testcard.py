@@ -83,7 +83,8 @@ FFPROBE = _STATIC_FFPROBE if os.path.isfile(_STATIC_FFPROBE) else "ffprobe"
 # tradeoff. All four below (sr500 and sr333 720p pairs) were confirmed safe
 # at their configured bitrates by a 2026-09-10 hardware run. Empty list =
 # every profile in PROFILES.
-PROFILES_TO_TUNE = ["sr250_fec34_720p", "sr250_fec23_720p"]
+PROFILES_TO_TUNE = ["sr333_fec23_720p", "sr333_fec34_720p",
+                    "sr500_fec23_720p", "sr500_fec34_720p"]
 
 # How long each trial plays the live testcard pipeline before stopping and
 # measuring - matches the ~90s clip length tune_profiles.py's movie/camera

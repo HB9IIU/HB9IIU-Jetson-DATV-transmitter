@@ -1,0 +1,20 @@
+Clips: test_clip_640x360_90s.mkv, test_clip_960x540_90s.mkv, test_clip_1280x720_90s.mkv
+Overlays (banners/marquee): as on air - top banner off, bottom banner on, marquee on
+
+##############################################################
+SUMMARY - all profiles (88 min total)
+##############################################################
+  sr333_fec23             292 kbps -> keep at  292 kbps, needs muxdelay >= 0.7s (today at 1.0s: 0 warnings)
+  sr333_fec34             342 kbps -> keep at  342 kbps, needs muxdelay >= 0.5s (today at 1.0s: 0 warnings)
+  sr500_fec23             498 kbps -> keep at  498 kbps, needs muxdelay >= 0.5s (today at 1.0s: 0 warnings)
+  sr500_fec34             575 kbps -> keep at  575 kbps, needs muxdelay >= 0.5s (today at 1.0s: 0 warnings)
+
+FINDINGS
+--------------------------------------------------------------
+  4 of 4 profiles tested successfully (0 failed).
+  4 profile(s) already at their safe optimum: sr333_fec23, sr333_fec34, sr500_fec23, sr500_fec34
+
+ACTIONS TO BE TAKEN
+--------------------------------------------------------------
+  None - every tested profile's configured bitrate is already safe.
+  CBR_MUXDELAY_SECONDS (1.0s) already covers every tested profile (clip needs >= 0.7s; keep the margin for real content).

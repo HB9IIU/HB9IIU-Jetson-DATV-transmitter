@@ -12,16 +12,14 @@ a single file has one uridecodebin carrying both streams already in sync,
 which is exactly the "video" source path already used for real videos, and
 already loops correctly (see loop_media_element() in datv_tx_plus.py).
 
-Video is encoded lossless (FFV1) for the same reason preprocess_videos.py
-does: a static image compresses to almost nothing either way, so there's no
-cost to staying lossless, and it avoids stacking a second lossy generation
-before the final low-bitrate DVB-S2 H.265 encode. Audio is stream-copied
-from the already-normalized soundtracks_normalized/*.m4a untouched.
+Video is encoded with the same H.264 settings as preprocess_videos.py
+(h264_output_args()) so the Jetson decodes it in hardware - FFV1 had to be
+decoded in software, even for a still image, and stuttered on air. Audio is
+stream-copied from the already-normalized soundtracks_normalized/*.m4a
+untouched.
 
 Usage: run this script, pick one testcard and one soundtrack (or none) when
 prompted, and it creates one file per resolution:
-    preprocessed_640x360/<testcard>_<soundtrack>.mkv
-    preprocessed_960x540/<testcard>_<soundtrack>.mkv
     preprocessed_1280x720/<testcard>_<soundtrack>.mkv
 Run it again with a different combination whenever you want another one
 available - existing files for a combination already generated are skipped.
@@ -33,6 +31,8 @@ import os
 import shutil
 import subprocess
 
+from preprocess_videos import h264_output_args, is_valid_output
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TESTCARDS_DIR = os.path.join(SCRIPT_DIR, "testcards")
 SOUNDTRACKS_DIR = os.path.join(SCRIPT_DIR, "soundtracks_normalized")
@@ -41,8 +41,6 @@ SOUNDTRACKS_DIR = os.path.join(SCRIPT_DIR, "soundtracks_normalized")
 # pre-processed output folder - the same ones preprocess_videos.py fills,
 # so datv_tx_plus.py's picker doesn't need to know these came from here.
 RESOLUTIONS = {
-    (640, 360): os.path.join(SCRIPT_DIR, "preprocessed_640x360"),
-    (960, 540): os.path.join(SCRIPT_DIR, "preprocessed_960x540"),
     (1280, 720): os.path.join(SCRIPT_DIR, "preprocessed_1280x720"),
 }
 
@@ -134,11 +132,7 @@ def generate(testcard_path, soundtrack_path, width, height, out_path):
     else:
         cmd += ["-t", str(NO_AUDIO_DURATION_SECONDS)]
 
-    cmd += [
-        "-vf", "scale={}:{}".format(width, height),
-        "-c:v", "ffv1",
-        out_path,
-    ]
+    cmd += h264_output_args(width, height) + [out_path]
     print("  command: {}".format(" ".join(cmd)))
 
     result = subprocess.run(
@@ -171,7 +165,9 @@ def main():
     for (width, height), output_dir in RESOLUTIONS.items():
         out_path = os.path.join(output_dir, name)
         print("\n{}x{} -> {}".format(width, height, out_path))
-        if os.path.exists(out_path):
+        # is_valid_output(), not os.path.exists(): an older FFV1 file of
+        # the same name gets regenerated as H.264 instead of skipped.
+        if is_valid_output(out_path):
             print("  [skip] already exists")
             ok_count += 1
             continue

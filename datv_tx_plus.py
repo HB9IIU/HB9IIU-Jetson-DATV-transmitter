@@ -42,6 +42,7 @@ ever shows MQTT-only muting is insufficient.
 MQTT uses the Pluto's default credentials: root/analog.
 """
 
+import math
 import os
 import re
 import socket
@@ -98,10 +99,12 @@ def draw_marquee(overlay, cr, timestamp, duration, width, height, state):
             state["x_bearing"] = extents.x_bearing
             state["y_bearing"] = extents.y_bearing
             state["text_width"] = extents.width
+            text_height = extents.height
         else:
             state["x_bearing"] = extents[0]
             state["y_bearing"] = extents[1]
             state["text_width"] = extents[2]
+            text_height = extents[3]
         # font_extents (ascent/descent), not text_extents, for the
         # background bar's height - a stable line height regardless of
         # which glyphs MARQUEE_TEXT happens to contain, rather than
@@ -113,31 +116,65 @@ def draw_marquee(overlay, cr, timestamp, duration, width, height, state):
         else:
             state["font_ascent"] = font_extents[0]
             state["font_descent"] = font_extents[1]
+        # Render the whole text ONCE into its own image (1 px margin around
+        # the ink); every frame then only copies the visible window of it.
+        # Re-rendering all glyphs of a ~5700 px text with show_text() on
+        # every frame kept one core busy and held the pipeline at ~19 fps
+        # at 1280x720 (measured 2026-09-25) even after the strip change.
+        text_surface = cairo.ImageSurface(
+            cairo.FORMAT_ARGB32,
+            int(math.ceil(state["text_width"])) + 2, int(math.ceil(text_height)) + 2)
+        text_cr = cairo.Context(text_surface)
+        text_cr.select_font_face(MARQUEE_FONT_FAMILY, 0, 0)
+        text_cr.set_font_size(style["font_size"])
+        text_cr.set_source_rgba(*MARQUEE_COLOR_RGBA)
+        text_cr.move_to(1 - state["x_bearing"], 1 - state["y_bearing"])
+        text_cr.show_text(MARQUEE_TEXT)
+        text_surface.flush()
+        state["text_surface"] = text_surface
+        state["text_height"] = text_height
         state["first_timestamp"] = timestamp
         log("Marquee rendered width: {:.0f}px (video width: {}px)".format(
             state["text_width"], width))
 
+    # The marquee is drawn on its own small, opaque strip (see
+    # marquee_strip_geometry()), not on the full frame: shift frame
+    # coordinates into strip coordinates and start every frame from a
+    # clean (black) strip. The strip's transparency is applied as a whole
+    # by the compositor (sink_3::alpha), not per pixel.
+    cr.save()
+    cr.set_operator(cairo.OPERATOR_CLEAR)
+    cr.paint()
+    cr.restore()
+    cr.translate(0, -state["y_offset"])
+
     elapsed_seconds = (timestamp - state["first_timestamp"]) / float(Gst.SECOND)
     travel_distance = width + state["text_width"]
     x = width - ((elapsed_seconds * style["speed_px_per_second"]) % travel_distance)
-    y_top = style["y_px"]
+    # Full-width band, not just behind the letters - a classic ticker strip
+    # the text scrolls through, so the backdrop doesn't jump around with the
+    # text's own changing width/position.
+    bar_top = style["y_px"] - style["bg_padding_top_px"]
+    bar_height = (state["font_ascent"] + state["font_descent"]
+                  + style["bg_padding_top_px"] + style["bg_padding_bottom_px"])
+    # Text centred vertically on its actual ink (tallest letter to lowest
+    # descender) within the band's VISIBLE part. Placing its top at y_px
+    # left ~4 px above and ~11 px below it at 1280x720 (2026-09-25): the
+    # band's height comes from the font's line height, which is taller than
+    # the ink, and the band starts above the frame (y_px < padding top).
+    visible_top = max(0, bar_top)
+    y_top = visible_top + (bar_top + bar_height - visible_top - state["text_height"]) / 2.0
 
     if MARQUEE_BG_RGBA is not None:
-        # Full-width band, not just behind the letters - a classic ticker
-        # strip the text scrolls through, so the backdrop doesn't jump
-        # around with the text's own changing width/position.
-        bar_top = y_top - style["bg_padding_top_px"]
-        bar_height = (state["font_ascent"] + state["font_descent"]
-                      + style["bg_padding_top_px"] + style["bg_padding_bottom_px"])
         cr.set_source_rgba(*MARQUEE_BG_RGBA)
         cr.rectangle(0, bar_top, width, bar_height)
         cr.fill()
 
-    cr.set_source_rgba(*MARQUEE_COLOR_RGBA)
-    # show_text() positions the baseline; compensate for Cairo's bearings so
-    # x is the visible text's left edge and y_top is its top edge.
-    cr.move_to(x - state["x_bearing"], y_top - state["y_bearing"])
-    cr.show_text(MARQUEE_TEXT)
+    # The pre-rendered text image has a 1 px margin, so its top-left sits
+    # 1 px up/left of the text's visible top-left edge (x, y_top). Cairo
+    # only touches the part that lands inside the strip.
+    cr.set_source_surface(state["text_surface"], x - 1, y_top - 1)
+    cr.paint()
 
 # ---- Settings - edit these directly ----
 
@@ -148,7 +185,7 @@ def draw_marquee(overlay, cr, timestamp, duration, width, height, state):
 # profile-name string to type or memorize here anymore, and no risk of the
 # old "multiple uncommented PROFILE = lines, last one silently wins"
 # confusion, since there's only one assignment each for SR/FEC/SOURCE.
-SR = 500       # symbol rate in kS/s: 250, 333, or 500
+SR = 500       # symbol rate in kS/s: 333 or 500
 FEC = "2/3"    # DVB-S2 FEC: "2/3" or "3/4"
 
 SOURCE = "video"  # "camera" (live cam+mic), "video" (pick+loop a pre-processed video), or "testcard" (pick+loop a static image from testcards/)
@@ -806,14 +843,14 @@ def read_jetson_cpu_temp_c():
         return int(f.read().strip()) / 1000.0
 
 
-def format_telemetry(telemetry):
-    pluto_temp = telemetry.get("temperature_ad")
-    pluto_temp_str = "{:.1f}°C".format(int(pluto_temp) / 1000.0) if pluto_temp else "--"
+def format_telemetry(telemetry, profile):
+    """Bottom banner's middle text, e.g.
+    "Jetson CPU 42.5°C | Tx 484 kb/s FEC 3/4 SR333 Fr.: 2405.750 MHz"."""
     tx_bitrate = telemetry.get("tx/dvbs2/ts/bitrate")
-    tx_bitrate_str = "{:.0f}kb/s".format(int(tx_bitrate) / 1000.0) if tx_bitrate else "--"
-    return "Jetson CPU {:.1f}°C {:.0f}% | Pluto {} TX {}".format(
-        read_jetson_cpu_temp_c(), read_jetson_cpu_load_percent(),
-        pluto_temp_str, tx_bitrate_str)
+    tx_bitrate_str = "{:.0f} kb/s".format(int(tx_bitrate) / 1000.0) if tx_bitrate else "--"
+    return "Jetson CPU {:.1f}°C | Tx {} FEC {} SR{} Fr.: {:.3f} MHz".format(
+        read_jetson_cpu_temp_c(), tx_bitrate_str, profile["fec"],
+        profile["symbol_rate"] // 1000, FREQUENCY_HZ / 1e6)
 
 
 def load_testcard_overlay_config(source_path, width, height):
@@ -1063,6 +1100,81 @@ def select_audio_device():
     return alsa_id
 
 
+def probe_video_codec(path):
+    """Codec name of the file's first video stream ("h264", "ffv1", ...) via
+    the system ffprobe, or None if it can't be determined - the caller then
+    falls back to the plain software-decoding chain."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", path],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            universal_newlines=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def marquee_strip_geometry(width, height):
+    """(top, height) in frame pixels of the strip the marquee is drawn on -
+    exactly the band draw_marquee() fills (font ascent + descent + the
+    style's top/bottom padding), so the result looks the same as before.
+
+    Why a strip (2026-09-25): drawing the marquee on the full frame needed a
+    full-frame conversion to BGRA and back for every frame, in one thread -
+    at 1280x720 that capped the whole pipeline at 16 fps (measured: 30 s of
+    video took 46 s with the marquee, 29 s with banners only), which
+    stuttered on air. The strip is blended in by the compositor like the
+    top/bottom bars, so only its few thousand pixels get converted."""
+    style = MARQUEE_STYLES[(width, height)]
+    cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))
+    cr.select_font_face(MARQUEE_FONT_FAMILY, 0, 0)
+    cr.set_font_size(style["font_size"])
+    font_extents = cr.font_extents()
+    if hasattr(font_extents, "ascent"):
+        ascent, descent = font_extents.ascent, font_extents.descent
+    else:
+        ascent, descent = font_extents[0], font_extents[1]
+    top = style["y_px"] - style["bg_padding_top_px"]
+    strip_height = int(math.ceil(
+        ascent + descent + style["bg_padding_top_px"] + style["bg_padding_bottom_px"]))
+    strip_height += strip_height % 2  # even height for the 4:2:0 conversion
+    return top, strip_height
+
+
+def new_marquee_state(width, height):
+    """Fresh per-pipeline state for draw_marquee() - call after
+    build_pipeline_description(), which sets the marquee globals it uses."""
+    top, _ = marquee_strip_geometry(width, height)
+    return {"first_timestamp": None, "text_width": None, "y_offset": top}
+
+
+def track_video_file_position(pipeline):
+    """For SOURCE == "video": returns a dict whose "pts" is kept updated with
+    the timestamp of the last video frame that has actually left the
+    decoder (video_file_queue's src pad), or None if there's no such queue.
+
+    Used instead of query_position() on the uridecodebin for the "video
+    finished" check: that reports how far the file has been *read*, and
+    with small hardware-decoded H.264 files the reader buffers far ahead -
+    a 30 s test clip reported "almost at the end" after 2 s (2026-09-25),
+    which would cut a transmission short by that much. Big FFV1 files hid
+    this, because their read-ahead was only a fraction of a second."""
+    queue = pipeline.get_by_name("video_file_queue")
+    if queue is None:
+        return None
+    state = {"pts": None}
+
+    def on_buffer(pad, info):
+        buffer = info.get_buffer()
+        if buffer is not None and buffer.pts != Gst.CLOCK_TIME_NONE:
+            state["pts"] = buffer.pts
+        return Gst.PadProbeReturn.OK
+
+    queue.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, on_buffer)
+    return state
+
+
 def camera_capture_size(width, height):
     """Camera capture mode for a given output resolution - always 1280x720
     (the C920's MJPEG / imx219's NV12 mode at 30 fps), scaled down from
@@ -1186,7 +1298,22 @@ def build_pipeline_description(ip, profile, source_path=None,
             "sink_2::xpos=0 sink_2::ypos={} sink_2::alpha={}".format(
                 height - overlay_style["bottom_bar_height"],
                 overlay_style["bottom_bar_alpha"] if bottom_bar_visible else 0.0),
-            "!",
+        ]
+        if SOURCE != "testcard" and MARQUEE_ENABLED:
+            # sink_3 = the marquee strip, linked last below the bars. One
+            # alpha for the whole (opaque) strip, like the bars: the band's
+            # own transparency. Per-pixel alpha would switch the compositor's
+            # whole output to BGRA (measured 2026-09-25: I420 without the
+            # strip, BGRA 1280x720 with it) - a full-frame conversion there
+            # and back on every frame, the very cost the strip is meant to
+            # avoid. Side effect: the text is as transparent as the band.
+            parts.append("sink_3::xpos=0 sink_3::ypos={} sink_3::alpha={}".format(
+                marquee_strip_geometry(width, height)[0],
+                MARQUEE_BG_RGBA[3] if MARQUEE_BG_RGBA is not None else 1.0))
+        parts += [
+            # Pinned to the video's own format, so a new input can never
+            # silently switch the compositor to a full-frame RGB format.
+            "! video/x-raw,format=I420 !",
             "videoconvert !",
         ]
         if top_bar_visible:
@@ -1206,12 +1333,6 @@ def build_pipeline_description(ip, profile, source_path=None,
                 "textoverlay name=telemetry_overlay text=\"\" halignment=center",
                 "valignment=top ypad={} shaded-background=false font-desc=\"Sans {}\" !".format(
                     bottom_bar_text_ypad, bottom_text_font_size),
-            ]
-        if MARQUEE_ENABLED:
-            parts += [
-                "videoconvert ! video/x-raw,format=BGRA !",
-                "cairooverlay name=marquee_overlay !",
-                "videoconvert !",
             ]
     else:
         # No compositor/bars/overlays at all - the source's video branch
@@ -1279,16 +1400,41 @@ def build_pipeline_description(ip, profile, source_path=None,
             "queue ! mux.",
         ]
     elif SOURCE == "video":
+        video_codec = probe_video_codec(source_path)
+        if video_codec == "h264":
+            # uridecodebin picks the hardware decoder by itself (nvv4l2decoder
+            # ranks above avdec_h264), which outputs NVMM (GPU) memory -
+            # nvvidconv brings it back to system memory and scales in
+            # hardware in the same step. See preprocess_videos.py for why
+            # video files are H.264: the old software-decoded FFV1 files
+            # stuttered on air at 1280x720.
+            log("🎞️  Video file: {} (H.264, hardware decoding)".format(
+                os.path.basename(source_path)))
+            video_chain = [
+                "filesrc. ! queue name=video_file_queue ! nvvidconv !",
+                "video/x-raw,width={},height={},format=I420 !".format(width, height),
+                "videorate ! video/x-raw,framerate={}/1 !".format(FPS),
+                "videoconvert ! {}".format(video_sink),
+            ]
+        else:
+            # Older lossless FFV1 files (and anything else): software
+            # decoding, exactly as before.
+            log("🎞️  Video file: {} ({}, software decoding - may stutter at 1280x720; "
+                "convert it again to get H.264)".format(
+                    os.path.basename(source_path), video_codec or "unknown codec"))
+            video_chain = [
+                "filesrc. ! queue name=video_file_queue ! videoconvert ! videorate ! video/x-raw,framerate={}/1 !".format(FPS),
+                "videoscale ! video/x-raw,width={},height={} !".format(width, height),
+                "videoconvert ! {}".format(video_sink),
+            ]
         parts += [
             # Pads are created dynamically once the file's streams are known,
             # but gst_parse_launch defers "filesrc." links until then - the
             # same idiom as `gst-launch-1.0 uridecodebin ... name=d d. ! ...`.
             "uridecodebin uri={} name=filesrc".format(Gst.filename_to_uri(source_path)),
-
-            "filesrc. ! queue ! videoconvert ! videorate ! video/x-raw,framerate={}/1 !".format(FPS),
-            "videoscale ! video/x-raw,width={},height={} !".format(width, height),
-            "videoconvert ! {}".format(video_sink),
-
+        ]
+        parts += video_chain
+        parts += [
             "filesrc. ! queue ! audioconvert ! audioresample ! audiorate !",
             "audio/x-raw,format=S16LE,rate=48000,channels=1 !",
             "voaacenc bitrate={} !".format(profile["audio_bitrate_kbps"] * 1000),
@@ -1373,6 +1519,19 @@ def build_pipeline_description(ip, profile, source_path=None,
                 width, overlay_style["bottom_bar_height"], FPS),
             "videoconvert ! comp.",
         ]
+        if SOURCE != "testcard" and MARQUEE_ENABLED:
+            # Linked last, so it becomes sink_3 and sits on top of the
+            # picture and the bars (compositor z-order = pad order). Drawn
+            # in BGRx (opaque), converted to I420 here - only this strip's
+            # pixels - and blended with the pad alpha set above.
+            marquee_top, marquee_height = marquee_strip_geometry(width, height)
+            parts += [
+                "videotestsrc pattern=black is-live=true !",
+                "video/x-raw,format=BGRx,width={},height={},framerate={}/1 !".format(
+                    width, marquee_height, FPS),
+                "cairooverlay name=marquee_overlay !",
+                "videoconvert ! video/x-raw,format=I420 ! comp.",
+            ]
 
     return " ".join(parts)
 
@@ -1444,15 +1603,15 @@ def main():
         # Only exists when (top_bar_enabled or bottom_bar_enabled) and MARQUEE_ENABLED.
         marquee_overlay = gst_pipeline.get_by_name("marquee_overlay")
         if marquee_overlay is not None:
-            marquee_state = {"first_timestamp": None, "text_width": None}
             marquee_overlay.connect(
-                "draw", draw_marquee, width, height, marquee_state)
+                "draw", draw_marquee, width, height, new_marquee_state(width, height))
         # Only exists when SOURCE == "video" or "testcard" (see
         # build_pipeline_description). For "testcard" the duration query
         # below never reports a positive duration (a still image/imagefreeze
         # has none), so the EOS watchdog naturally never fires and the card
         # loops until Ctrl+C - no separate code path needed.
         video_source = gst_pipeline.get_by_name("filesrc")
+        video_position = track_video_file_position(gst_pipeline)
         # Only exist when SOURCE == "testcard" (see build_pipeline_description).
         tone_source = gst_pipeline.get_by_name("tone_source")
         freq_banner_overlay = gst_pipeline.get_by_name("testcard_freq_banner")
@@ -1515,17 +1674,17 @@ def main():
                 log("🔚 EOS on the bus from {} - transmission ends here.".format(
                     message.src.get_name()))
                 break
-            if video_source is not None:
+            if video_source is not None and video_position is not None:
                 ok_dur, duration = video_source.query_duration(Gst.Format.TIME)
-                ok_pos, position = video_source.query_position(Gst.Format.TIME)
-                if (ok_dur and ok_pos and duration > 0
+                position = video_position["pts"]
+                if (ok_dur and position is not None and duration > 0
                         and position >= duration - VIDEO_END_MARGIN_SECONDS * Gst.SECOND):
                     log("🏁 Video finished; transmission ends here.")
                     break
             now = time.monotonic()
             if (telemetry_overlay is not None
                     and now - last_telemetry_update >= TELEMETRY_UPDATE_SECONDS):
-                telemetry_overlay.set_property("text", format_telemetry(telemetry))
+                telemetry_overlay.set_property("text", format_telemetry(telemetry, profile))
                 last_telemetry_update = now
             if (elapsed_overlay is not None
                     and now - last_elapsed_update >= TESTCARD_TIME_OVERLAY_TICK_SECONDS):

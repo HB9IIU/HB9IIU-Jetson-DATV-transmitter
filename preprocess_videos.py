@@ -1,14 +1,15 @@
-"""Pre-process source videos from "original videos/" into lossless copies
-resized to each DATV profile resolution, so datv_tx_plus.py (SOURCE="file")
-never has to scale on the fly while looping a file forever.
+"""Pre-process source videos from "original videos/" into copies resized
+to the DATV profile resolution and frame rate, so datv_tx_plus.py
+(SOURCE="video") never has to scale or drop frames on the fly.
 
-Why lossless: resizing once via ffmpeg is exactly as good quality-wise as
-the videoscale GStreamer already does live - the risk isn't the resize, it's
-re-encoding to a *lossy* intermediate, which would stack a second lossy
-generation on top of the final low-bitrate DVB-S2 H.265 encode. FFV1 avoids
-that: mathematically lossless (pixel-exact), much smaller/cheaper to decode
-than storing raw frames. Audio is copied untouched (no re-encode needed,
-resolution doesn't affect audio).
+Why H.264 (since 2026-09-25, was lossless FFV1): the Jetson has to decode
+these files in real time while also scaling, drawing overlays and
+encoding. FFV1 can only be decoded in software - a detailed 1280x720 file
+took ~2.5 of the Nano's 4 CPU cores just to decode, and videos stuttered on
+air. H.264 is decoded by the Jetson's hardware decoder (nvv4l2decoder) at
+almost no CPU cost. At CRF 16 the intermediate is visually lossless, far
+above what survives the final low-bitrate DVB-S2 H.265 encode. Audio is
+copied untouched (no re-encode needed, resolution doesn't affect audio).
 
 Naming convention / "only convert once" trick: each output keeps the
 source's own filename (extension stripped) as a .mkv in the matching
@@ -31,19 +32,38 @@ SOURCE_DIR = os.path.join(SCRIPT_DIR, "original videos")
 # pre-processed output folder. Add an entry here if a new profile
 # resolution shows up later - no other code needs to change.
 #
-# 1280x720 dropped (2026-09-09): real hardware testing showed 960x540 looks
-# noticeably better than 1280x720 at the same sr500 bitrate (fewer
-# compression mosaics on motion), so video mode no longer uses 720p at any
-# symbol rate - see dvbs2_profiles.py. The sr500_*_720p profile entries stay
-# for the still-open testcard question; if video mode ever needs 720p again,
-# re-add it here and re-run this script to regenerate it losslessly from
-# "original videos/".
+# 1280x720 only since 2026-09-24: with the new encoder settings every
+# profile (SR333/SR500, camera/video/testcard) runs at 720p - see
+# dvbs2_profiles.py.
 RESOLUTIONS = {
-    (640, 360): os.path.join(SCRIPT_DIR, "preprocessed_640x360"),
-    (960, 540): os.path.join(SCRIPT_DIR, "preprocessed_960x540"),
+    (1280, 720): os.path.join(SCRIPT_DIR, "preprocessed_1280x720"),
 }
 
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".m4v", ".mov", ".webm", ".mkv"}
+
+# Same as datv_tx_plus.FPS (not imported - that module pulls in GStreamer).
+# Converting to the on-air frame rate here means the pipeline's videorate
+# never has to decode frames only to throw them away (a 30 fps source
+# wastes 1 decode in 6 at 25 fps).
+TARGET_FPS = 25
+# Codec the "already converted?" check requires - older lossless FFV1
+# outputs don't count, so re-running this script replaces them.
+OUTPUT_VIDEO_CODEC = "h264"
+
+
+def h264_output_args(width, height):
+    """ffmpeg output options for one preprocessed video - shared with
+    fileUploader/engine.py, video_conversion.py and
+    testcard_movies_generator.py so every video source ends up in the same
+    hardware-decodable format. High profile 8-bit 4:2:0 is what the Jetson
+    Nano's nvv4l2decoder handles; veryfast keeps conversion time down on
+    the Nano's CPU (at a fixed CRF a faster preset mostly costs file size,
+    not quality); -g 50 = a keyframe every 2 s."""
+    return [
+        "-vf", "scale={}:{},fps={}".format(width, height, TARGET_FPS),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
+        "-profile:v", "high", "-pix_fmt", "yuv420p", "-g", str(2 * TARGET_FPS),
+    ]
 
 # ffmpeg-static/ffmpeg is a self-contained static build (currently 7.0.2,
 # with AV1/libdav1d decode support) placed next to this script - checked
@@ -108,19 +128,24 @@ def is_valid_output(path):
     file - ffmpeg can create/truncate the output file before failing partway
     through (e.g. no decoder for the source codec), which plain
     os.path.exists() can't tell apart from a genuinely completed
-    conversion, silently leaving a broken file in place forever."""
+    conversion, silently leaving a broken file in place forever. It must
+    also already be H.264 (OUTPUT_VIDEO_CODEC) - an older FFV1 output gets
+    converted again."""
     if not os.path.exists(path):
         return False
     if FFPROBE is None:
         return os.path.getsize(path) > 0  # best effort without ffprobe
     result = subprocess.run(
-        [FFPROBE, "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        [FFPROBE, "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=codec_name:format=duration",
+         "-of", "default=noprint_wrappers=1", path],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     try:
-        return float(result.stdout.strip()) > 0
+        duration = float(fields.get("duration", ""))
     except ValueError:
         return False
+    return duration > 0 and fields.get("codec_name") == OUTPUT_VIDEO_CODEC
 
 
 def plan_conversions(source_videos):
@@ -145,16 +170,12 @@ def plan_conversions(source_videos):
 
 
 def convert(source_path, width, height, out_path):
-    """Lossless resize-only pass: FFV1 video, audio copied untouched."""
+    """Resize + frame-rate pass to hardware-decodable H.264, audio copied
+    untouched (see module docstring)."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    cmd = [
-        FFMPEG, "-y",
-        "-i", source_path,
-        "-vf", "scale={}:{}".format(width, height),
-        "-c:v", "ffv1",
-        "-c:a", "copy",
-        out_path,
-    ]
+    cmd = ([FFMPEG, "-y", "-i", source_path]
+           + h264_output_args(width, height)
+           + ["-c:a", "copy", out_path])
     print("  command: {}".format(" ".join(cmd)))
 
     # capture_output=/text= need Python 3.7+; the Jetson's venv is 3.6, so

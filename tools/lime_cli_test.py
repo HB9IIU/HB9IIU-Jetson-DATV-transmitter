@@ -1,6 +1,6 @@
 """Jetson LimeSDR Mini DVB-S2 test: C920 camera + mic, via DATV-Linux's
 dvbs2_tx. Reuses the real, hardware-tuned profile table from
-dvbs2_profiles.py (CAMERA_VIDEO_PROFILE_NAMES) instead of redefining
+dvbs2_profiles.py (CAMERA_PROFILE_NAMES) instead of redefining
 resolution/bitrate numbers here - see that file's docstring for why.
 
 Deliberately NOT using the ffmpeg CBR-relay stage (compare datv_tx_plus.py's
@@ -9,7 +9,7 @@ processes (GStreamer -> dvbs2_tx directly) since sr500_fec34 has comfortable
 capacity margin (607 kbps used of 726 kbps available). Add the relay back
 only if picture quality specifically needs it.
 
-Run: python3 lime_cli_test.py     Stop: Ctrl+C
+Run: python3 tools/lime_cli_test.py     Stop: Ctrl+C
 """
 
 import os
@@ -19,7 +19,11 @@ import subprocess
 import sys
 import time
 
-from dvbs2_profiles import (PROFILES, CAMERA_VIDEO_PROFILE_NAMES, FRAME,
+# Lives in tools/, one level below the project root that holds
+# dvbs2_profiles.py.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from dvbs2_profiles import (PROFILES, CAMERA_PROFILE_NAMES, FRAME,  # noqa: E402
                              calculate_dvbs2_ts_bitrate)
 
 TX_BIN = os.path.expanduser("~/DATV-Linux/build/dvbs2_tx")
@@ -31,7 +35,7 @@ GOLDCODE = 0
 FPS = 25
 
 # Edit these two to try a different symbol rate/FEC - must be a key in
-# CAMERA_VIDEO_PROFILE_NAMES (dvbs2_profiles.py).
+# CAMERA_PROFILE_NAMES (dvbs2_profiles.py).
 SYMBOL_RATE_KSPS = 500
 FEC = "3/4"
 
@@ -44,11 +48,11 @@ def modcod_string(fec):
 def resolve_profile():
     key = (SYMBOL_RATE_KSPS, FEC)
     try:
-        profile_name = CAMERA_VIDEO_PROFILE_NAMES[key]
+        profile_name = CAMERA_PROFILE_NAMES[key]
     except KeyError:
         raise SystemExit(
             "No camera profile for SR={}kS/s FEC={} - see "
-            "CAMERA_VIDEO_PROFILE_NAMES in dvbs2_profiles.py for valid "
+            "CAMERA_PROFILE_NAMES in dvbs2_profiles.py for valid "
             "combinations.".format(SYMBOL_RATE_KSPS, FEC))
     return PROFILES[profile_name]
 

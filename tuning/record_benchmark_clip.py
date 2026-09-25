@@ -49,8 +49,8 @@ MASTER_PATH = os.path.join(CLIPS_DIR, "camera_master_raw.mkv")
 DURATION_SECONDS = 90
 WARMUP_SECONDS = 10
 # Same resolutions (and file names) as tune_profiles.py's TEST_CLIPS_CAMERA.
-# 640x360 only matters for the video-mode profiles now.
-RESOLUTIONS = [(640, 360), (960, 540), (1280, 720)]
+# Every profile is 1280x720 since 2026-09-24.
+RESOLUTIONS = [(1280, 720)]
 # Matches the on-air camera capture mode (datv_tx_plus.camera_capture_size()).
 CAPTURE_SIZE = "{}x{}".format(*tx.camera_capture_size(1280, 720))
 CAPTURE_FPS = 30

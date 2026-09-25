@@ -54,7 +54,7 @@ import sys
 REGISTRY_FILENAME = "usb_video_key_registry.json"
 # Kept in sync by hand with preprocess_videos.py's RESOLUTIONS - update
 # both if a profile resolution is ever added/removed.
-PREPROCESSED_FOLDER_NAMES = ("preprocessed_640x360", "preprocessed_960x540")
+PREPROCESSED_FOLDER_NAMES = ("preprocessed_1280x720",)
 # Same name preprocess_videos.py's own SOURCE_DIR already uses for raw,
 # not-yet-converted source videos - created now so it's there in advance
 # for whenever raw-video-onto-the-key preprocessing gets wired up.

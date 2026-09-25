@@ -108,12 +108,11 @@ else:
 # Which profile(s) to tune - edit this directly, then just hit Run (see
 # module docstring for why this is a constant, not a command-line
 # argument). Empty list = every profile in PROFILES (multi-hour).
-# 2026-09-24: the 6 camera profiles (higher resolutions, new encoder
-# settings) against the room-scene benchmark clip. The 6 video-mode
+# 2026-09-24: the camera profiles (higher resolutions, new encoder
+# settings) against the room-scene benchmark clip. The video-mode
 # profiles (same names without "_camera") were last tuned 2026-09-23 with
 # the old encoder settings and need a re-run too.
-PROFILES_TO_TUNE = ["sr250_fec23_camera", "sr250_fec34_camera",
-                    "sr333_fec23_camera", "sr333_fec34_camera",
+PROFILES_TO_TUNE = ["sr333_fec23_camera", "sr333_fec34_camera",
                     "sr500_fec23_camera", "sr500_fec34_camera"]
 
 # Two content types tested so far turned out to matter (2026-09-07 finding:
@@ -246,7 +245,7 @@ def run_encode_trial(profile, video_bitrate_kbps, clip_path, out_ts_path):
     marquee_overlay = pipeline.get_by_name("marquee_overlay")
     if marquee_overlay is not None:
         marquee_overlay.connect("draw", tx.draw_marquee, width, height,
-                                {"first_timestamp": None, "text_width": None})
+                                tx.new_marquee_state(width, height))
     telemetry_overlay = pipeline.get_by_name("telemetry_overlay")
     # No Pluto here - fill in plausible values; the Jetson's own CPU
     # temp/load in the string are live, just like on air.
@@ -254,6 +253,9 @@ def run_encode_trial(profile, video_bitrate_kbps, clip_path, out_ts_path):
                       "tx/dvbs2/ts/bitrate": str(int(tx.calculate_dvbs2_ts_bitrate(profile)))}
     last_telemetry_update = 0.0
     video_source = pipeline.get_by_name("filesrc")
+    # Frames actually decoded, not how far the file was read ahead - see
+    # tx.track_video_file_position().
+    video_position = tx.track_video_file_position(pipeline)
     bus = pipeline.get_bus()
     pipeline.set_state(Gst.State.PLAYING)
 
@@ -263,7 +265,7 @@ def run_encode_trial(profile, video_bitrate_kbps, clip_path, out_ts_path):
             now = time.monotonic()
             if (telemetry_overlay is not None
                     and now - last_telemetry_update >= tx.TELEMETRY_UPDATE_SECONDS):
-                telemetry_overlay.set_property("text", tx.format_telemetry(fake_telemetry))
+                telemetry_overlay.set_property("text", tx.format_telemetry(fake_telemetry, profile))
                 last_telemetry_update = now
             message = bus.timed_pop_filtered(
                 int(1.0 * Gst.SECOND), Gst.MessageType.ERROR | Gst.MessageType.EOS)
@@ -273,8 +275,8 @@ def run_encode_trial(profile, video_bitrate_kbps, clip_path, out_ts_path):
                     raise RuntimeError("GStreamer error: {} ({})".format(error, debug))
                 return
             ok_dur, duration = video_source.query_duration(Gst.Format.TIME)
-            ok_pos, position = video_source.query_position(Gst.Format.TIME)
-            if (ok_dur and ok_pos and duration > 0
+            position = video_position["pts"]
+            if (ok_dur and position is not None and duration > 0
                     and position >= duration - int(1.0 * Gst.SECOND)):
                 return
             if time.monotonic() - start > TRIAL_TIMEOUT_SECONDS:

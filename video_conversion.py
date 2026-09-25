@@ -1,5 +1,5 @@
 """Background watcher: converts raw videos dropped into a USB video key's
-"original videos" folder into the same lossless, pre-resized
+"original videos" folder into the same pre-resized H.264
 preprocessed_<W>x<H>/ .mkv files preprocess_videos.py already produces for
 the SD card's own demo video - so a user can just copy a video file onto
 the key and have it show up in the picker a while later, no manual step
@@ -7,7 +7,7 @@ needed.
 
 Reuses preprocess_videos.py's own ffmpeg detection and conversion/
 validity-check functions directly (see its own docstring for why
-FFV1/lossless, and why "does the output file already exist and play" is
+H.264, and why "does the output file already exist and play" is
 the record of "already converted") rather than duplicating them - only
 the *location* differs here (the USB key's own mount, not this project's
 own folder next to app.py).
@@ -17,7 +17,7 @@ consistent with usb_video_key.py's own pivot away from a fragile external
 dependency (see its docstring). A video drop-and-convert is not a
 latency-sensitive operation, so POLL_INTERVAL_SECONDS is deliberately
 relaxed, and conversion is skipped entirely whenever a stream is live (an
-FFV1 encode competing with the Jetson Nano's own live GStreamer encode/TX
+H.264 encode competing with the Jetson Nano's own live GStreamer encode/TX
 pipeline for CPU is asking for dropped frames on air).
 """
 
@@ -33,7 +33,7 @@ from preprocess_videos import (
 POLL_INTERVAL_SECONDS = 10
 # Same resolutions preprocess_videos.py's own RESOLUTIONS covers - kept in
 # sync by hand, see the comment there.
-TARGET_RESOLUTIONS = ((640, 360), (960, 540))
+TARGET_RESOLUTIONS = ((1280, 720),)
 
 
 def _convert_pending():

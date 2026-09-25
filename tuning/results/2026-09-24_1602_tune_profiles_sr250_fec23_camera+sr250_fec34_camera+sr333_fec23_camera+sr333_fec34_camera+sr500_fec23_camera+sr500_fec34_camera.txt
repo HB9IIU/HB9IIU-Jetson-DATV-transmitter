@@ -1,0 +1,31 @@
+Clips: camera_clip_640x360_90s.mkv, camera_clip_960x540_90s.mkv, camera_clip_1280x720_90s.mkv
+Overlays (banners/marquee): as on air - top banner off, bottom banner on, marquee on
+
+##############################################################
+SUMMARY - all profiles (100 min total)
+##############################################################
+  sr250_fec23_camera      191 kbps -> raise to  196 kbps, needs muxdelay >= 1.0s (today at 1.0s: 0 warnings)
+  sr250_fec34_camera      228 kbps -> raise to  233 kbps, needs muxdelay >= 1.0s (today at 1.0s: 0 warnings)
+  sr333_fec23_camera      292 kbps -> raise to  298 kbps, needs muxdelay >= 1.0s (today at 1.0s: 0 warnings)
+  sr333_fec34_camera      342 kbps -> raise to  350 kbps, needs muxdelay >= 1.0s (today at 1.0s: 0 warnings)
+  sr500_fec23_camera      498 kbps -> keep at  498 kbps, needs muxdelay >= 1.0s (today at 1.0s: 0 warnings)
+  sr500_fec34_camera      575 kbps -> keep at  575 kbps, needs muxdelay >= 1.0s (today at 1.0s: 0 warnings)
+
+FINDINGS
+--------------------------------------------------------------
+  6 of 6 profiles tested successfully (0 failed).
+  4 profile(s) have real spare capacity and could go higher for better quality:
+    - sr250_fec23_camera: 191 -> 196 kbps
+    - sr250_fec34_camera: 228 -> 233 kbps
+    - sr333_fec23_camera: 292 -> 298 kbps
+    - sr333_fec34_camera: 342 -> 350 kbps
+  2 profile(s) already at their safe optimum: sr500_fec23_camera, sr500_fec34_camera
+
+ACTIONS TO BE TAKEN
+--------------------------------------------------------------
+  Edit PROFILES in dvbs2_profiles.py:
+    "sr250_fec23_camera": video_bitrate_kbps 191 -> 196
+    "sr250_fec34_camera": video_bitrate_kbps 228 -> 233
+    "sr333_fec23_camera": video_bitrate_kbps 292 -> 298
+    "sr333_fec34_camera": video_bitrate_kbps 342 -> 350
+  CBR_MUXDELAY_SECONDS (1.0s) already covers every tested profile (clip needs >= 1.0s; keep the margin for real content).

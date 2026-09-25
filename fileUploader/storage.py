@@ -9,7 +9,7 @@ sys.path.insert(0, _ROOT_DIR)
 import usb_video_key
 usb_video_key.init(_ROOT_DIR)
 
-PREPROCESSED_FOLDERS = ('preprocessed_640x360', 'preprocessed_960x540')
+PREPROCESSED_FOLDERS = ('preprocessed_1280x720',)
 ORIGINAL_FOLDER = 'original videos'
 
 

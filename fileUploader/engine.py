@@ -1,4 +1,4 @@
-"""FFV1 lossless transcoding at two resolutions, durable job state."""
+"""H.264 transcoding to 1280x720 (hardware-decodable on the Jetson), durable job state."""
 import json
 import math
 import os
@@ -10,11 +10,14 @@ import time
 import uuid
 from werkzeug.utils import secure_filename
 from storage import USBStorage, StorageError
+# storage.py already put the project root on sys.path - same conversion
+# settings as the SD card's own preprocess_videos.py.
+from preprocess_videos import h264_output_args
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 FORMATS = 'mov,matroska,webm,avi,asf,flv,mpeg,mpegts,mpegvideo,h264,hevc,av1,ivf,ogg'
 INPUT_OPTIONS = ['-protocol_whitelist', 'file', '-format_whitelist', FORMATS]
-RESOLUTIONS = [(640, 360), (960, 540)]
+RESOLUTIONS = [(1280, 720)]
 ORIGINAL_FOLDER = 'original videos'
 PREVIEW_FOLDER = 'preprocessed_{}x{}'.format(*RESOLUTIONS[-1])
 
@@ -340,10 +343,9 @@ class Engine:
                 if not audio:
                     cmd += ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']
                 audio_map = '0:{}'.format(audio[0]['index']) if audio else '1:a:0'
-                cmd += ['-map', '0:{}'.format(video['index']), '-map', audio_map,
-                        '-vf', 'scale={}:{}'.format(width, height),
-                        '-c:v', 'ffv1', '-c:a', 'copy',
-                        '-progress', 'pipe:1', '-nostats', path]
+                cmd += ['-map', '0:{}'.format(video['index']), '-map', audio_map]
+                cmd += h264_output_args(width, height)
+                cmd += ['-c:a', 'copy', '-progress', 'pipe:1', '-nostats', path]
                 written.append(folder)
                 self.run(cmd, job, expected, tuple(open_fds), phase)
                 out_info = self.probe(path, tuple(open_fds))
@@ -359,7 +361,7 @@ class Engine:
                 os.unlink(original_name, dir_fd=orig_fd)
                 self.update(job, original_deleted=True)
             except OSError as exc:
-                self.update(job, warning='Both outputs saved, but original could not be removed: ' + str(exc))
+                self.update(job, warning='Output saved, but original could not be removed: ' + str(exc))
         except Exception as exc:
             for folder in written:
                 try:
