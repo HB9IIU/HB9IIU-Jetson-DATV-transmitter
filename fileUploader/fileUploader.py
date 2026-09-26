@@ -116,7 +116,10 @@ def media(video_id):
     f = os.fdopen(vf, 'rb')
     size = os.fstat(vf).st_size
     try:
-        response = send_file(f, mimetype='video/x-matroska', download_name=item['output_name'], conditional=False)
+        # No download_name/attachment_filename: the preview plays inline, and
+        # the Jetson's Flask 0.12 doesn't know download_name (Flask 2.0+) -
+        # that TypeError made every preview fail with HTTP 400.
+        response = send_file(f, mimetype='video/x-matroska', conditional=False)
         response.content_length = size
         response.make_conditional(request, accept_ranges=True, complete_length=size)
         response.call_on_close(f.close)

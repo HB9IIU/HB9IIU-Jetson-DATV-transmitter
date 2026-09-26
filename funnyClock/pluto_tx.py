@@ -204,7 +204,10 @@ def start_cbr_relay(pluto_ip, ts_bitrate):
     log("🎞️  Starting CBR relay at {} bit/s...".format(ts_bitrate))
     command = [
         # repeat+: every warning on its own line, so they can be timed below.
-        "ffmpeg", "-hide_banner", "-loglevel", "repeat+warning",
+        # -nostdin: otherwise ffmpeg reads keys from the terminal it was
+        # started from - typing/pasting there while on air switched it
+        # to debug output and a command prompt (funnyClock, 2026-09-26).
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "repeat+warning",
         "-fflags", "+nobuffer", "-probesize", "32768", "-analyzeduration", "1000000",
         "-i", input_url,
         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",

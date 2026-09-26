@@ -33,40 +33,57 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402  (must follow gi.require_version)
 
 # ---- Settings ----
-FREQUENCY_HZ = 2409250000
+
+FREQUENCY_HZ = 2405750000
 SR_CHOICES = [333, 500]       # asked at startup, see ask_symbol_rate()
 FEC = "2/3"
 GAIN_DB = 0                   # 0 dB = maximum power
 CALLSIGN = "HB9IIU"           # also the Pluto's MQTT topic callsign
 LOCATOR = "JN36kl"
 FPS = 25
+# nvv4l2h265enc quality settings - the same as the main project's
+# datv_tx_plus.py (2026-09-24, modelled on a captured OBS + Easy DATV
+# stream): a keyframe every 4 s instead of every 1 s (each keyframe costs
+# several P-frames' worth of bits), idrinterval matching so every keyframe
+# is a clean entry point for receivers, 4 reference frames, Slow preset.
+ENCODER_KEYFRAME_INTERVAL = 4 * FPS
+ENCODER_PRESET_LEVEL = 4     # 1=UltraFast (encoder default) ... 4=Slow
+ENCODER_REF_FRAMES = 4
 STATUS_SECONDS = 30           # how often the "on air" status line is logged
 
-# Looping tone sequence: (frequency_hz, seconds); 0 Hz = silent gap.
-TONES = [
-    (100, 0.8),
-    (200, 0.8),
-    (400, 0.8),
-    (880, 0.8),
-    (1000, 0.8),
-    (1500, 0.8),
-    (2000, 0.8),
-    (0, 0.8),
+# Tone per 5-second slot of every minute: (from_second, frequency_hz), each
+# one playing for TONE_SECONDS from its second, silent until the next
+# entry; 0 Hz = off. Before :05 it's silent. Lowest tone 300 Hz: 100 Hz
+# wasn't audible on air (2026-09-26).
+TONE_SECONDS = 1.0
+TONE_SCHEDULE = [
+    (5, 300),
+    (10, 400),
+    (15, 600),
+    (20, 800),
+    (25, 1000),
+    (30, 1200),
+    (35, 1000),
+    (40, 800),
+    (45, 600),
+    (50, 400),
+    (55, 300),
 ]
 TONE_VOLUME = 0.126           # audiotestsrc linear scale, ~ -18 dBFS
 # SBB second hand reaches 12 after this many seconds, then waits for the
 # minute to jump.
 SWEEP_SECONDS = 58.5
-# Each minute: TONES loop from :05 to :55, silence, then a BEEP_HZ time
-# signal for as long as the second hand waits at 12 (:58.5 to :00),
-# silence until :05.
-TONES_START = 5
-TONES_END = 55
+# Each minute: a BEEP_HZ time signal for TONE_SECONDS exactly when the
+# minute hand jumps (:00), silence until :05, then TONE_SCHEDULE. (Until
+# 2026-09-26 the beep ran from :58.5 while the second hand waited at 12 -
+# which sounded early.)
 BEEP_HZ = 1000
-# The tone changes this long after its "... Hz" label, so both arrive at the
-# receiver together (video has more encode/relay latency than audio) - same
-# offset as the main project's testcard melody.
-TONE_AUDIO_DELAY = 1.0
+# Extra delay of the tone relative to its "... Hz" label. 0 since the hands
+# and label are drawn for each frame's own display time (frame_wall_time()):
+# the pipeline renders video ~1.1 s ahead, and drawing "now" instead made the
+# label (and second hand) appear 1.15 s after the tone - measured on air
+# 2026-09-26, and what the old value of 1.0 was compensating for.
+TONE_AUDIO_DELAY = 0.0
 
 WIDTH, HEIGHT = 1280, 720     # the layout below is drawn for 720p
 SR = None                     # set in main() from the console prompt
@@ -96,6 +113,8 @@ GRATING_WIDTHS = [4, 3, 2, 1]  # line width per row, coarse to fine
 
 TEXT_COLOR = "#3c4650"        # dark slate for callsign/locator, softer than black
 LABEL_SIZE = 30               # "... Hz" label, in output pixels
+CALLSIGN_SIZE = 54            # callsign on the dial, in output pixels (was 68)
+LOCATOR_SIZE = 42             # locator on the dial, in output pixels
 LABEL_Y = 0.54                # label centre below the dial centre, x radius
 
 # Set in main(): cairo surface per tone frequency.
@@ -215,8 +234,8 @@ def render_background(path):
         else:
             marker(angle, 0.90, 0.97, 0.024)
 
-    centered_text(draw, C, C - 0.45 * R, CALLSIGN, load_font(68 * SS), TEXT_COLOR)
-    centered_text(draw, C, C + 0.40 * R, LOCATOR, load_font(42 * SS), TEXT_COLOR)
+    centered_text(draw, C, C - 0.45 * R, CALLSIGN, load_font(CALLSIGN_SIZE * SS), TEXT_COLOR)
+    centered_text(draw, C, C + 0.40 * R, LOCATOR, load_font(LOCATOR_SIZE * SS), TEXT_COLOR)
 
     card.paste(face.resize((2 * half, 2 * half), Image.BOX),
                (cx - half, cy - half))
@@ -229,7 +248,7 @@ def render_tone_labels():
     font = load_font(LABEL_SIZE)
     rgb = ImageColor.getrgb(TEXT_COLOR)
     labels = {}
-    for freq in [f for f, _seconds in TONES] + [BEEP_HZ]:
+    for freq in [f for _second, f in TONE_SCHEDULE] + [BEEP_HZ]:
         if not freq or freq in labels:
             continue
         text = "{} Hz".format(freq)
@@ -243,26 +262,39 @@ def render_tone_labels():
     return labels
 
 
-def tone_at(elapsed):
-    position = elapsed % sum(seconds for _freq, seconds in TONES)
-    for freq, seconds in TONES:
-        if position < seconds:
-            return freq
-        position -= seconds
-    return TONES[-1][0]
-
-
 def sound_at(wall_time):
     # Frequency to play at this wall-clock time, 0 = silence.
     second = wall_time % 60
-    if second >= SWEEP_SECONDS:
+    if second < TONE_SECONDS:
         return BEEP_HZ
-    if TONES_START <= second < TONES_END:
-        return tone_at(second - TONES_START)
-    return 0
+    freq = 0
+    for from_second, slot_freq in TONE_SCHEDULE:
+        if from_second <= second < from_second + TONE_SECONDS:
+            freq = slot_freq
+    return freq
 
 
 # ---- Hands (cairo, every frame) ----
+
+# Set in main() once the pipeline exists; see frame_wall_time().
+frame_clock = {"pipeline": None, "offset": None}
+
+
+def frame_wall_time(timestamp):
+    """Wall-clock time (time.time() scale) at which the frame with this
+    buffer timestamp is shown - not the moment it happens to be drawn. The
+    video branch (imagefreeze, not live) runs ~1.1 s ahead of the live
+    audio, so drawing the clock for "now" put hands and label 1.1 s behind
+    the tones. Running time + base time is the pipeline clock reading at
+    which the frame plays; the offset maps that clock onto time.time()."""
+    pipeline = frame_clock["pipeline"]
+    clock = pipeline.get_clock() if pipeline is not None else None
+    if clock is None or timestamp == Gst.CLOCK_TIME_NONE:
+        return time.time()
+    if frame_clock["offset"] is None:
+        frame_clock["offset"] = time.time() - clock.get_time() / Gst.SECOND
+    return (pipeline.get_base_time() + timestamp) / Gst.SECOND + frame_clock["offset"]
+
 
 def hand(cr, angle, r_from, r_to, w_from, w_to):
     # Flat-ended bar along `angle`, tapering from w_from to w_to.
@@ -280,15 +312,15 @@ def hand(cr, angle, r_from, r_to, w_from, w_to):
     cr.fill()
 
 
-def draw_hands(_overlay, cr, _timestamp, _duration):
+def draw_hands(_overlay, cr, timestamp, _duration):
+    now = frame_wall_time(timestamp)
     # Current tone label first, so the hands pass over it.
-    label = tone_labels.get(sound_at(time.time()))
+    label = tone_labels.get(sound_at(now))
     if label is not None:
         cr.set_source_surface(label, cx - label.get_width() / 2,
                               cy + LABEL_Y * radius - label.get_height() / 2)
         cr.paint()
 
-    now = time.time()
     local = time.localtime(now)
     second = now % 60
 
@@ -323,13 +355,16 @@ def pipeline_description():
         "videoconvert !",
         "nvvidconv ! video/x-raw(memory:NVMM),format=NV12 !",
         "queue !",
-        "nvv4l2h265enc bitrate={} insert-sps-pps=true iframeinterval={} !".format(
-            PROFILE["video_bitrate_kbps"] * 1000, FPS),
+        "nvv4l2h265enc bitrate={} insert-sps-pps=true iframeinterval={} idrinterval={}".format(
+            PROFILE["video_bitrate_kbps"] * 1000, ENCODER_KEYFRAME_INTERVAL,
+            ENCODER_KEYFRAME_INTERVAL),
+        "preset-level={} num-Ref-Frames={} maxperf-enable=true !".format(
+            ENCODER_PRESET_LEVEL, ENCODER_REF_FRAMES),
         "h265parse config-interval=1 !",
         "queue ! mux.",
 
         "audiotestsrc name=tone wave=sine freq={} volume=0 is-live=true !".format(
-            TONES[0][0] or 440),
+            TONE_SCHEDULE[0][1] or 440),
         "audioconvert ! audioresample ! audiorate !",
         "audio/x-raw,format=S16LE,rate=48000,channels=1 !",
         "voaacenc bitrate={} !".format(PROFILE["audio_bitrate_kbps"] * 1000),
@@ -379,6 +414,7 @@ def main():
         relay = tx.start_cbr_relay(pluto_ip, ts_bitrate)
 
         pipeline = Gst.parse_launch(pipeline_description())
+        frame_clock["pipeline"] = pipeline
         pipeline.get_by_name("hands").connect("draw", draw_hands)
         tone = pipeline.get_by_name("tone")
         bus = pipeline.get_bus()

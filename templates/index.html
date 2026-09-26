@@ -82,7 +82,7 @@
               <div class="text-center small fw-semibold mb-3" id="testcard-carousel-label">—</div>
               <select class="form-select mb-3 d-none" id="testcard-source" aria-label="Select testcard">
                 {% for testcard in testcards %}
-                <option value="{{ testcard.value }}" data-preview-url="{{ url_for('testcard_preview', filename=testcard.value) }}">{{ testcard.label }}</option>
+                <option value="{{ testcard.value }}" data-preview-url="{{ url_for('testcard_preview', filename=testcard.value, v=testcard.version) }}">{{ testcard.label }}</option>
                 {% else %}
                 <option value="">No testcards found</option>
                 {% endfor %}

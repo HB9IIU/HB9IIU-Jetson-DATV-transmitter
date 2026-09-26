@@ -44,7 +44,6 @@
     .preview img { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; display: none; }
     .preview.is-live img { display: block; }
     .preview.is-live .preview-message { display: none; }
-    .preview::after { content: "640 × 360  •  10 fps  •  preview only"; position: absolute; z-index: 2; left: .65rem; bottom: .55rem; color: #c4d8e8; font-size: .7rem; background: rgba(0,0,0,.55); padding: .25rem .45rem; border-radius: .35rem; }
 
     .carousel-arrow { position: absolute; z-index: 3; top: 50%; transform: translateY(-50%); width: 2.6rem; height: 2.6rem; display: grid; place-items: center; border-radius: 50%; border: 1px solid #3a5265; background: rgba(7, 17, 27, .65); color: #fff; font-size: 1.4rem; line-height: 1; cursor: pointer; transition: background-color .15s ease, border-color .15s ease; }
     .carousel-arrow:hover { background: rgba(37, 137, 255, .35); border-color: var(--blue); }

@@ -736,7 +736,10 @@ def build_cbr_relay_command(input_url, output_url, ts_bitrate,
     which runs it on a file instead of UDP so it measures exactly what goes
     on air."""
     return [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning",
+        # -nostdin: otherwise ffmpeg reads keys from the terminal it was
+        # started from - typing/pasting there while on air switched it
+        # to debug output and a command prompt (funnyClock, 2026-09-26).
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "warning",
         "-fflags", "+nobuffer", "-probesize", "32768", "-analyzeduration", "1000000",
         "-i", input_url,
         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",

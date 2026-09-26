@@ -344,6 +344,10 @@ def detect_testcards():
                 files.append({
                     "value": name,
                     "label": os.path.splitext(name)[0].replace("-", " ").replace("_", " ").title(),
+                    # Cache-buster for the preview URL (?v=...): previews are
+                    # cached for 12 h, so an image replaced or renamed under a
+                    # name used before would otherwise keep showing the old one.
+                    "version": int(os.path.getmtime(os.path.join(TESTCARD_DIR, name))),
                 })
     return files
 
