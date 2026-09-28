@@ -34,7 +34,18 @@ real testcard pipeline via datv_tx_plus.py's own build_pipeline_description()
 (TX_OUTPUT="file", no Pluto/MQTT needed), runs it for
 TESTCARD_TRIAL_DURATION_SECONDS of wall-clock time while driving the same
 elapsed-time/tone-schedule/marquee updates main() would, then measures the
-resulting .ts file's real bitrate with ffprobe.
+resulting .ts file's real bitrate with ffprobe. Same safety rule as
+tune_profiles.py (added 2026-09-26): a trial only counts as safe if it is
+under SAFETY_MARGIN of capacity AND passes the exact on-air CBR relay with
+zero "dts < pcr" warnings at some muxdelay in MUXDELAY_CANDIDATES - the
+average alone misses keyframe bursts.
+
+Which image: all test cards differ a lot in detail (PNG size 175 KB to
+1.15 MB), and more detail means bigger keyframes. Before tuning, every
+image gets a short trial at one fixed bitrate (pick_hardest_testcard());
+the one with the most relay warnings / highest real bitrate is tuned on,
+so the result is safe for the easier ones too. On air the testcards carry
+no banners/marquee (main() forces them off), so neither do the trials.
 
 Each trial runs in its OWN subprocess, same reasoning as tune_profiles.py
 (a real SIGSEGV was observed on this hardware after ~16 in-process
@@ -53,6 +64,8 @@ IDE's Run button as from a terminal.
 Usage: python tune_profiles_for_testcard.py
 """
 
+import contextlib
+import io
 import os
 import subprocess
 import sys
@@ -69,8 +82,13 @@ PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, PROJECT_DIR)
 
 import datv_tx_plus as tx  # noqa: E402
+# The relay check (count_relay_warnings(), MUXDELAY_CANDIDATES) is shared
+# with the camera/video tuner so both judge "safe" the same way.
+sys.path.insert(0, SCRIPT_DIR)
+import tune_profiles as tp  # noqa: E402
 
 WORK_DIR = os.path.join(SCRIPT_DIR, "runs")
+RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
 # ffmpeg-static/ isn't on the Jetson (checked 2026-09-23) - fall back to the
 # system ffprobe rather than failing on a missing path.
 _STATIC_FFPROBE = os.path.join(PROJECT_DIR, "ffmpeg-static", "ffprobe")
@@ -90,6 +108,9 @@ PROFILES_TO_TUNE = ["sr333_fec23_720p", "sr333_fec34_720p",
 # measuring - matches the ~90s clip length tune_profiles.py's movie/camera
 # trials use, for a comparable amount of real encoder output per trial.
 TESTCARD_TRIAL_DURATION_SECONDS = 90.0
+# Shorter trial per image when picking the hardest one - still ~7 keyframes
+# at the 4 s GOP, which is what differs between images.
+IMAGE_SCAN_DURATION_SECONDS = 30.0
 
 # How close to the profile's exact DVB-S2 TS capacity a trial's real
 # measured bitrate is allowed to get - same reasoning and value as
@@ -106,23 +127,40 @@ def log(message):
     print("[{}] {}".format(time.strftime("%H:%M:%S"), message), flush=True)
 
 
-def pick_testcard_image():
-    """Any one real testcard image, picked deterministically (first
-    alphabetically) rather than via select_testcard_file()'s interactive
-    prompt, which can't run inside a subprocess. Which specific image
-    doesn't matter much for a bitrate-safety measurement - every testcard
-    is a similarly near-static background, and the overlay text/marquee
-    that actually moves is identical across images.
-    """
+def list_testcard_images():
     testcard_dir = os.path.join(tx.SCRIPT_DIR, "testcards")
     files = sorted(name for name in os.listdir(testcard_dir)
                     if name.lower().endswith((".png", ".jpg", ".jpeg")))
     if not files:
         raise SystemExit("No test card images found in {}".format(testcard_dir))
-    return os.path.join(testcard_dir, files[0])
+    return [os.path.join(testcard_dir, name) for name in files]
 
 
-def run_testcard_trial(profile, video_bitrate_kbps, testcard_path, out_ts_path):
+def pick_hardest_testcard(profile_name):
+    """Short trial of every testcard image at profile_name's configured
+    bitrate; returns the image the encoder struggles with most (most relay
+    warnings at the on-air muxdelay, then highest real bitrate)."""
+    profile = tx.PROFILES[profile_name]
+    capacity_bps = tx.calculate_dvbs2_ts_bitrate(profile)
+    scan_path = os.path.join(WORK_DIR, "_testcard_scan_trial.ts")
+    log("Finding the hardest test card ({}s each at {} kbps, profile '{}')...".format(
+        IMAGE_SCAN_DURATION_SECONDS, profile["video_bitrate_kbps"], profile_name))
+    scores = []
+    for path in list_testcard_images():
+        run_testcard_trial_subprocess(profile_name, profile["video_bitrate_kbps"], path,
+                                      scan_path, IMAGE_SCAN_DURATION_SECONDS)
+        real_bps = measure_bitrate_bps(scan_path)
+        warnings = tp.count_relay_warnings(scan_path, capacity_bps, tx.CBR_MUXDELAY_SECONDS)
+        log("  {}: real {} bit/s, {} relay warnings at {}s".format(
+            os.path.basename(path), real_bps, warnings, tx.CBR_MUXDELAY_SECONDS))
+        scores.append((warnings, real_bps, path))
+    hardest = max(scores)[2]
+    log("Hardest: {} - tuning on it.".format(os.path.basename(hardest)))
+    return hardest
+
+
+def run_testcard_trial(profile, video_bitrate_kbps, testcard_path, out_ts_path,
+                       duration_seconds=TESTCARD_TRIAL_DURATION_SECONDS):
     """Encode testcard_path through the real pipeline at video_bitrate_kbps
     for TESTCARD_TRIAL_DURATION_SECONDS of wall-clock time, writing
     out_ts_path. Reproduces main()'s live driving loop (elapsed-time
@@ -177,7 +215,7 @@ def run_testcard_trial(profile, video_bitrate_kbps, testcard_path, out_ts_path):
                 raise RuntimeError("GStreamer error: {} ({})".format(error, debug))
 
             now = time.monotonic()
-            if now - trial_start > TESTCARD_TRIAL_DURATION_SECONDS:
+            if now - trial_start > duration_seconds:
                 return
 
             if (elapsed_overlay is not None
@@ -211,10 +249,12 @@ def run_testcard_trial(profile, video_bitrate_kbps, testcard_path, out_ts_path):
         pipeline.set_state(Gst.State.NULL)
 
 
-def run_testcard_trial_subprocess(profile_name, video_bitrate_kbps, testcard_path, out_ts_path):
+def run_testcard_trial_subprocess(profile_name, video_bitrate_kbps, testcard_path, out_ts_path,
+                                  duration_seconds=TESTCARD_TRIAL_DURATION_SECONDS):
     """Runs one trial in a brand-new subprocess - see module docstring."""
     command = [sys.executable, os.path.abspath(__file__), "--_trial",
-               profile_name, str(video_bitrate_kbps), testcard_path, out_ts_path]
+               profile_name, str(video_bitrate_kbps), testcard_path, out_ts_path,
+               str(duration_seconds)]
     last_summary = None
     for attempt in range(1, TRIAL_RETRY_LIMIT + 1):
         result = subprocess.run(
@@ -258,6 +298,7 @@ def find_max_safe_video_bitrate_kbps(profile_name, testcard_path):
 
     trial_path = os.path.join(WORK_DIR, "_testcard_bisect_trial.ts")
     best_kbps = None
+    best_muxdelay = None
     trial_num = 0
     while hi - lo > BISECTION_TOLERANCE_KBPS:
         trial_num += 1
@@ -267,12 +308,23 @@ def find_max_safe_video_bitrate_kbps(profile_name, testcard_path):
         trial_start = time.monotonic()
         run_testcard_trial_subprocess(profile_name, mid, testcard_path, trial_path)
         real_bps = measure_bitrate_bps(trial_path)
-        safe = real_bps <= ceiling_bps
-        log("  trial {}: video_bitrate_kbps={:.0f} -> real {} bit/s ({}) [{:.0f}s]".format(
-            trial_num, mid, real_bps, "safe" if safe else "OVER ceiling",
-            time.monotonic() - trial_start))
+        fits = real_bps <= ceiling_bps
+        # Same rule as tune_profiles.py: no relay check if the average
+        # already doesn't fit.
+        muxdelay, tried = tp.find_min_clean_muxdelay(trial_path, capacity_bps) if fits else (None, {})
+        safe = fits and muxdelay is not None
+        if not fits:
+            verdict = "OVER ceiling"
+        elif muxdelay is None:
+            verdict = "relay timing FAILS up to {}s ({})".format(
+                tp.MUXDELAY_CANDIDATES[-1], tp.format_tried(tried))
+        else:
+            verdict = "safe, clean from muxdelay {}s ({})".format(muxdelay, tp.format_tried(tried))
+        log("  trial {}: video_bitrate_kbps={:.0f} -> real {} bit/s, {} [{:.0f}s]".format(
+            trial_num, mid, real_bps, verdict, time.monotonic() - trial_start))
         if safe:
             best_kbps = mid
+            best_muxdelay = muxdelay
             lo = mid
         else:
             hi = mid
@@ -282,7 +334,7 @@ def find_max_safe_video_bitrate_kbps(profile_name, testcard_path):
             "Even the lowest bracket ({:.0f} kbps) exceeded the safety ceiling - "
             "this profile's SR/FEC may not actually support its own resolution "
             "target on real testcard content.".format(lo))
-    return best_kbps, capacity_bps
+    return best_kbps, best_muxdelay, capacity_bps
 
 
 def tune_one_profile(profile_name, testcard_path):
@@ -290,15 +342,28 @@ def tune_one_profile(profile_name, testcard_path):
     width, height = profile["resolution"]
     original_kbps = profile["video_bitrate_kbps"]
 
-    best_kbps, capacity_bps = find_max_safe_video_bitrate_kbps(profile_name, testcard_path)
+    best_kbps, best_muxdelay, capacity_bps = find_max_safe_video_bitrate_kbps(
+        profile_name, testcard_path)
+
+    # The configuration as it goes on air today, through the relay at the
+    # on-air muxdelay - same sanity check as tune_profiles.py.
+    original_ts = os.path.join(WORK_DIR, "_testcard_compare_original.ts")
+    run_testcard_trial_subprocess(profile_name, original_kbps, testcard_path, original_ts)
+    original_real_bps = measure_bitrate_bps(original_ts)
+    original_on_air_warnings = tp.count_relay_warnings(
+        original_ts, capacity_bps, tx.CBR_MUXDELAY_SECONDS)
 
     print()
     print("=" * 62)
     print("Profile '{}' ({}x{}), DVB-S2 TS capacity = {:.0f} bit/s".format(
         profile_name, width, height, capacity_bps))
     print("-" * 62)
-    print("  currently configured : {:4d} kbps".format(original_kbps))
-    print("  found safe optimum   : {:4.0f} kbps".format(best_kbps))
+    print("  currently configured : {:4d} kbps -> real {:7d} bit/s ({:.1f}%), "
+          "relay @ {}s: {} warnings".format(
+              original_kbps, original_real_bps, original_real_bps / capacity_bps * 100.0,
+              tx.CBR_MUXDELAY_SECONDS, original_on_air_warnings))
+    print("  found safe optimum   : {:4.0f} kbps, relay clean from muxdelay {}s".format(
+        best_kbps, best_muxdelay))
     print("=" * 62)
     if best_kbps > original_kbps:
         print("-> raise video_bitrate_kbps for '{}' to {:.0f} in PROFILES "
@@ -315,7 +380,9 @@ def tune_one_profile(profile_name, testcard_path):
         "profile_name": profile_name,
         "original_kbps": original_kbps,
         "best_kbps": best_kbps,
+        "best_muxdelay": best_muxdelay,
         "capacity_bps": capacity_bps,
+        "original_on_air_warnings": original_on_air_warnings,
     }
 
 
@@ -329,8 +396,10 @@ def print_final_report(results, errors, run_start):
     for r in results:
         arrow = ("raise to" if r["best_kbps"] > r["original_kbps"] else
                   "LOWER to" if r["best_kbps"] < r["original_kbps"] else "keep at")
-        print("  {:22s} {:4d} kbps -> {} {:4.0f} kbps".format(
-            r["profile_name"], r["original_kbps"], arrow, r["best_kbps"]))
+        print("  {:22s} {:4d} kbps -> {} {:4.0f} kbps, needs muxdelay >= {}s "
+              "(today at {}s: {} warnings)".format(
+                  r["profile_name"], r["original_kbps"], arrow, r["best_kbps"],
+                  r["best_muxdelay"], tx.CBR_MUXDELAY_SECONDS, r["original_on_air_warnings"]))
     for profile_name, reason in errors:
         print("  {:22s} FAILED ({})".format(profile_name, reason))
 
@@ -344,8 +413,9 @@ def print_final_report(results, errors, run_start):
     print("  {} of {} profiles tested successfully ({} failed).".format(
         len(results), len(results) + len(errors), len(errors)))
     if over_capacity:
-        print("  {} profile(s) are configured OVER their real DVB-S2 capacity "
-              "on real testcard content:".format(len(over_capacity)))
+        print("  {} profile(s) are configured too high on real testcard content "
+              "(over the {:.0f}% safety limit, or relay not clean):".format(
+                  len(over_capacity), SAFETY_MARGIN * 100))
         for r in over_capacity:
             print("    - {}: {} -> {:.0f} kbps".format(
                 r["profile_name"], r["original_kbps"], r["best_kbps"]))
@@ -370,6 +440,15 @@ def print_final_report(results, errors, run_start):
         for r in changed:
             print("    \"{}\": video_bitrate_kbps {} -> {:.0f}".format(
                 r["profile_name"], r["original_kbps"], r["best_kbps"]))
+    if results:
+        needed = max(r["best_muxdelay"] for r in results)
+        if needed > tx.CBR_MUXDELAY_SECONDS:
+            print("  Set CBR_MUXDELAY_SECONDS in datv_tx_plus.py: {} -> {} "
+                  "(largest minimum among tested profiles).".format(
+                      tx.CBR_MUXDELAY_SECONDS, needed))
+        else:
+            print("  CBR_MUXDELAY_SECONDS ({}s) already covers every tested profile "
+                  "(testcard needs >= {}s).".format(tx.CBR_MUXDELAY_SECONDS, needed))
     if errors:
         print("  Investigate/re-run failed profile(s): {}".format(
             ", ".join(name for name, _ in errors)))
@@ -379,16 +458,17 @@ def _trial_worker_main(argv):
     """Entry point when this script is re-invoked as a --_trial subprocess
     (see run_testcard_trial_subprocess()) - never called directly by a user.
     """
-    profile_name, video_bitrate_kbps, testcard_path, out_ts_path = (
-        argv[0], int(argv[1]), argv[2], argv[3])
+    profile_name, video_bitrate_kbps, testcard_path, out_ts_path, duration_seconds = (
+        argv[0], int(argv[1]), argv[2], argv[3], float(argv[4]))
     profile = tx.PROFILES[profile_name]
-    run_testcard_trial(profile, video_bitrate_kbps, testcard_path, out_ts_path)
+    run_testcard_trial(profile, video_bitrate_kbps, testcard_path, out_ts_path,
+                       duration_seconds)
 
 
 def main():
     os.makedirs(WORK_DIR, exist_ok=True)
-    testcard_path = pick_testcard_image()
-    log("Using test card image: {}".format(testcard_path))
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    run_stamp = time.strftime("%Y-%m-%d_%H%M")
 
     if PROFILES_TO_TUNE:
         unknown = [name for name in PROFILES_TO_TUNE if name not in tx.PROFILES]
@@ -399,9 +479,13 @@ def main():
     else:
         profile_names = list(tx.PROFILES)
 
+    run_start = time.monotonic()
+    # One image for every profile: the hardest one at the first profile's
+    # bitrate is the hardest at the others too (same resolution/encoder).
+    testcard_path = pick_hardest_testcard(profile_names[0])
+
     results = []
     errors = []
-    run_start = time.monotonic()
     for i, profile_name in enumerate(profile_names, start=1):
         log("=== Profile {}/{}: '{}' (run elapsed so far: {:.0f} min) ===".format(
             i, len(profile_names), profile_name, (time.monotonic() - run_start) / 60.0))
@@ -416,7 +500,18 @@ def main():
         log("  Profile '{}' done in {:.0f} min.".format(
             profile_name, (time.monotonic() - profile_start) / 60.0))
 
-    print_final_report(results, errors, run_start)
+    # Also saved on its own in results/ (versioned in git), like
+    # tune_profiles.py's summaries.
+    summary = io.StringIO()
+    with contextlib.redirect_stdout(summary):
+        print_final_report(results, errors, run_start)
+    print(summary.getvalue(), end="")
+    results_path = os.path.join(RESULTS_DIR, "{}_tune_testcard_{}.txt".format(
+        run_stamp, "+".join(r["profile_name"] for r in results) or "none"))
+    with open(results_path, "w") as f:
+        f.write("Testcard image (hardest of all): {}\n".format(os.path.basename(testcard_path)))
+        f.write(summary.getvalue())
+    log("Summary saved to {}".format(results_path))
 
 
 if __name__ == "__main__":

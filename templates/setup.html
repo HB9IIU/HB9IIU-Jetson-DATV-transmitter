@@ -6,7 +6,7 @@
   <meta name="description" content="USB video key setup for the Jetson Nano DATV transmitter">
   <title>Jetson DATV — Setup</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="{{ url_for('static', filename='css/datv.css') }}" rel="stylesheet">
+  <link href="{{ static_url('css/datv.css') }}" rel="stylesheet">
 </head>
 <body>
   <nav class="navbar navbar-expand-lg sticky-top">
@@ -18,7 +18,9 @@
           <li class="nav-item"><a class="nav-link" href="{{ url_for('index') }}">Home</a></li>
           <li class="nav-item"><span class="nav-link active">Setup</span></li>
           <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('help_page') }}">Help</a></li>
         </ul>
+        <span class="nav-byline ms-auto">By HB9IIU</span>
       </div>
     </div>
   </nav>
@@ -130,7 +132,7 @@
   </div>
 
   <footer class="container-xxl pb-4 small text-center">JETSON DATV · USB video key setup</footer>
-  <script src="{{ url_for('static', filename='js/app-alert.js') }}" defer></script>
-  <script src="{{ url_for('static', filename='js/setup.js') }}" defer></script>
+  <script src="{{ static_url('js/app-alert.js') }}" defer></script>
+  <script src="{{ static_url('js/setup.js') }}" defer></script>
 </body>
 </html>

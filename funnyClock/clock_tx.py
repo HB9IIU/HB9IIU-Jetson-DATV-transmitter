@@ -12,6 +12,7 @@ local time. Stop any other stream first - both would drive the same Pluto.
 Run:  python3 clock_tx.py   (Ctrl+C stops)
 """
 
+import datetime
 import math
 import os
 import signal
@@ -21,6 +22,7 @@ import time
 
 import cairo
 import gi
+from dateutil import tz
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 import pluto_tx as tx
@@ -51,7 +53,7 @@ ENCODER_PRESET_LEVEL = 4     # 1=UltraFast (encoder default) ... 4=Slow
 ENCODER_REF_FRAMES = 4
 STATUS_SECONDS = 30           # how often the "on air" status line is logged
 
-# Tone per 5-second slot of every minute: (from_second, frequency_hz), each
+# Tone per 5-second dial mark of every minute: (mark, frequency_hz), each
 # one playing for TONE_SECONDS from its second, silent until the next
 # entry; 0 Hz = off. Before :05 it's silent. Lowest tone 300 Hz: 100 Hz
 # wasn't audible on air (2026-09-26).
@@ -84,6 +86,11 @@ BEEP_HZ = 1000
 # label (and second hand) appear 1.15 s after the tone - measured on air
 # 2026-09-26, and what the old value of 1.0 was compensating for.
 TONE_AUDIO_DELAY = 0.0
+# The whole clock (hands, label AND tones) runs this far ahead of real time,
+# so it matches real time when it reaches the viewer: measured 2026-09-26
+# from Jetson to MiniTioune's TS output, 4.5-5.1 s (median 4.85 s, SR333
+# 3/4). Hands and tones share this offset, so their sync is unaffected.
+CLOCK_AHEAD_SECONDS = 5.0
 
 WIDTH, HEIGHT = 1280, 720     # the layout below is drawn for 720p
 SR = None                     # set in main() from the console prompt
@@ -262,19 +269,37 @@ def render_tone_labels():
     return labels
 
 
+def tone_now():
+    """Frequency the tone generator should play right now - shared by this
+    script's main loop and datv_tx_plus.py's SOURCE "clock"."""
+    return sound_at(time.time() + CLOCK_AHEAD_SECONDS - TONE_AUDIO_DELAY)
+
+
 def sound_at(wall_time):
     # Frequency to play at this wall-clock time, 0 = silence.
     second = wall_time % 60
     if second < TONE_SECONDS:
         return BEEP_HZ
+    # Tones follow the red second hand, not the wall clock: the SBB hand
+    # sweeps the dial in SWEEP_SECONDS (58.5 s), so it reaches e.g. the :30
+    # mark after 29.25 s. Scheduling by wall clock made each tone
+    # increasingly late against the hand - measured 2026-09-26 on air:
+    # +0.2 marks at :05 up to +1.5 at :55.
     freq = 0
-    for from_second, slot_freq in TONE_SCHEDULE:
-        if from_second <= second < from_second + TONE_SECONDS:
+    for from_mark, slot_freq in TONE_SCHEDULE:
+        start = from_mark * SWEEP_SECONDS / 60
+        if start <= second < start + TONE_SECONDS:
             freq = slot_freq
     return freq
 
 
 # ---- Hands (cairo, every frame) ----
+
+# The system's own time zone, read straight from /etc/localtime - not
+# time.localtime(), which follows the process's TZ: datv_tx_plus.py (the web
+# app's SOURCE "clock") forces TZ=UTC for its clockoverlay, which put the
+# hands 2 h behind in summer (2026-09-26). Follows DST changes by itself.
+LOCAL_ZONE = tz.tzfile("/etc/localtime") if os.path.exists("/etc/localtime") else tz.tzlocal()
 
 # Set in main() once the pipeline exists; see frame_wall_time().
 frame_clock = {"pipeline": None, "offset": None}
@@ -313,7 +338,7 @@ def hand(cr, angle, r_from, r_to, w_from, w_to):
 
 
 def draw_hands(_overlay, cr, timestamp, _duration):
-    now = frame_wall_time(timestamp)
+    now = frame_wall_time(timestamp) + CLOCK_AHEAD_SECONDS
     # Current tone label first, so the hands pass over it.
     label = tone_labels.get(sound_at(now))
     if label is not None:
@@ -321,11 +346,11 @@ def draw_hands(_overlay, cr, timestamp, _duration):
                               cy + LABEL_Y * radius - label.get_height() / 2)
         cr.paint()
 
-    local = time.localtime(now)
+    local = datetime.datetime.fromtimestamp(now, LOCAL_ZONE)
     second = now % 60
 
-    hour_angle = 2 * math.pi * (local.tm_hour % 12 + local.tm_min / 60) / 12
-    minute_angle = 2 * math.pi * local.tm_min / 60
+    hour_angle = 2 * math.pi * (local.hour % 12 + local.minute / 60) / 12
+    minute_angle = 2 * math.pi * local.minute / 60
     second_angle = 2 * math.pi * min(second / SWEEP_SECONDS, 1.0)
 
     cr.set_source_rgb(0, 0, 0)
@@ -434,7 +459,7 @@ def main():
                     on_air // 60, on_air % 60, tx.dts_warning_total))
                 next_status += STATUS_SECONDS
 
-            freq = sound_at(time.time() - TONE_AUDIO_DELAY)
+            freq = tone_now()
             if freq != playing:
                 if freq:
                     tone.set_property("freq", freq)

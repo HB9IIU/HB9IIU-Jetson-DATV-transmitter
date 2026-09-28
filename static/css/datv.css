@@ -52,15 +52,31 @@
     .carousel-arrow-prev { left: .65rem; }
     .carousel-arrow-next { right: .65rem; }
 
+    /* Help page */
+    .help-page { max-width: 60rem; }
+    .help-list li { margin-bottom: .45rem; }
+    .help-tip, .help-warning { border-radius: .6rem; padding: .7rem .9rem; margin-top: .75rem; }
+    .help-tip { background: rgba(37,137,255,.1); border: 1px solid rgba(37,137,255,.35); }
+    .help-warning { background: rgba(255,193,7,.08); border: 1px solid rgba(255,193,7,.45); }
+    .help-slot { display: inline-block; width: 1.4rem; height: .4rem; border-radius: .1rem; vertical-align: middle; }
+    .help-slot-free { background: #25c26e; } .help-slot-busy { background: #ff4d5e; }
+    .help-faq dt { margin-top: .8rem; } .help-faq dt:first-child { margin-top: 0; }
+    .help-faq dd { margin: .15rem 0 0; color: var(--muted); }
+    .nav-byline { font-size: 1.5rem; font-weight: 700; color: #8a98a6; white-space: nowrap; }
+    /* Home page top gap: 25% less than Bootstrap's py-4 / py-lg-5 (1.5 / 3 rem). */
+    .main-top { padding-top: 1.125rem; }
+    @media (min-width: 992px) { .main-top { padding-top: 2.25rem; } }
+    /* Card 1 while on air: only the source buttons (see setSourceControlsDisabled()). */
+    .source-collapsed #camera-source-panel, .source-collapsed #file-source-panel { display: none !important; }
+    .source-collapsed .source-choice { margin-bottom: 0 !important; }
     .source-choice { display: grid; grid-template-columns: 1fr 1fr; gap: .65rem; }
     .source-choice-3 { grid-template-columns: 1fr 1fr 1fr; }
-    .source-choice-btn { min-height: 4.4rem; min-width: 0; display: flex; align-items: center; gap: .75rem; padding: .75rem; border: 1px solid #3a5265; border-radius: .75rem; color: var(--muted); background: #0b1823; cursor: pointer; transition: border-color .15s ease, background-color .15s ease, color .15s ease; }
-    .source-choice-btn strong, .source-choice-btn small { display: block; overflow-wrap: break-word; }
-    .source-choice-btn small { margin-top: .1rem; font-size: .7rem; font-weight: 500; }
+    .source-choice-btn { min-height: 2.5rem; min-width: 0; display: flex; align-items: center; gap: .6rem; padding: .3rem .7rem; border: 1px solid #3a5265; border-radius: .75rem; color: var(--muted); background: #0b1823; cursor: pointer; transition: border-color .15s ease, background-color .15s ease, color .15s ease; }
+    .source-choice-btn strong { display: block; overflow-wrap: break-word; }
     @container (max-width: 480px) {
       .source-choice-3 { grid-template-columns: 1fr; }
     }
-    .source-choice-icon { width: 2rem; height: 2rem; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; background: #203648; color: #7db9f8; font-size: .72rem; }
+    .source-choice-icon { width: 1.6rem; height: 1.6rem; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; background: #203648; color: #7db9f8; font-size: .72rem; }
     .btn-check:checked + .source-choice-btn { color: #fff; border-color: var(--blue); background: rgba(37,137,255,.13); box-shadow: 0 0 0 .18rem rgba(37,137,255,.09); }
     .btn-check:checked + .source-choice-btn .source-choice-icon { color: #fff; background: var(--blue); }
     .btn-check:focus-visible + .source-choice-btn { outline: 3px solid rgba(37,137,255,.3); outline-offset: 2px; }

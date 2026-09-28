@@ -124,15 +124,13 @@ PROFILES_TO_TUNE = ["sr333_fec23_camera", "sr333_fec34_camera",
 # point TEST_CLIPS at the right dict below - it's a one-line edit, not a
 # command-line argument, same convention as PROFILE/SOURCE in
 # datv_tx_plus.py.
+# Every profile is 1280x720 since 2026-09-25 (the 640x360/960x540 clips
+# were deleted then) - add a size back here only with a profile that uses it.
 TEST_CLIPS_MOVIE = {
-    (640, 360): os.path.join(CLIPS_DIR, "test_clip_640x360_90s.mkv"),
-    (960, 540): os.path.join(CLIPS_DIR, "test_clip_960x540_90s.mkv"),
     (1280, 720): os.path.join(CLIPS_DIR, "test_clip_1280x720_90s.mkv"),
 }
 # Produced by record_benchmark_clip.py.
 TEST_CLIPS_CAMERA = {
-    (640, 360): os.path.join(CLIPS_DIR, "camera_clip_640x360_90s.mkv"),
-    (960, 540): os.path.join(CLIPS_DIR, "camera_clip_960x540_90s.mkv"),
     (1280, 720): os.path.join(CLIPS_DIR, "camera_clip_1280x720_90s.mkv"),
 }
 TEST_CLIPS = TEST_CLIPS_CAMERA

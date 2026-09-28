@@ -1,0 +1,37 @@
+TESTCARD MODE - QUICK REFERENCE
+================================
+(SOURCE == "testcard" in datv_tx_plus.py)
+
+To activate a profile, set this single line in datv_tx_plus.py (~line 144):
+    PROFILE = "<name>"
+
+RECOMMENDED PROFILE PER SR/FEC
+-------------------------------
+SR/FEC          PROFILE NAME              RESOLUTION   BITRATE
+sr250, 2/3      sr250_fec23               640x360      191 kbps
+sr250, 3/4      sr250_fec34_720p          1280x720     228 kbps
+sr333, 2/3      sr333_fec23_720p          1280x720     292 kbps
+sr333, 3/4      sr333_fec34_720p          1280x720     342 kbps
+sr500, 2/3      sr500_fec23_720p          1280x720     498 kbps
+sr500, 3/4      sr500_fec34_720p          1280x720     575 kbps
+
+NOTES
+-----
+- sr250_fec23 has NO 720p option: the H.265 encoder's real bitrate floor
+  at 1280x720 exceeds this profile's DVB-S2 TS capacity - not a bitrate
+  problem, a resolution problem. Stays at 640x360.
+- Every other SR/FEC combo works fine at 1280x720 for testcard content,
+  because testcard is a static image (no motion-compression penalty the
+  way real video/camera content has).
+- Non-"_720p" base profiles (sr333_fec23/34, sr500_fec23/34 at 960x540)
+  still exist and still work, but are NOT recommended for testcard mode -
+  they're kept only because camera/video mode also uses them.
+- Testcard mode never shows the scrolling marquee (camera/video only).
+- Overlay text (callsign/freq/volume/elapsed) position/font/color comes
+  from testcard_overlays.yaml, keyed by test card filename + resolution.
+  Only 640x360 and 1280x720 entries exist there now (960x540 was removed
+  since no recommended testcard profile uses it).
+
+All bitrates above are hardware-confirmed safe via tune_profiles_for_testcard.py
+(2026-09-10 measurement run on the Jetson, real nvv4l2h265enc encoder,
+real testcard image, full live driving loop).

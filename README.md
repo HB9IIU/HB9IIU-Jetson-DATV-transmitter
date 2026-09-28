@@ -1,160 +1,161 @@
-# Jetson Nano Project
+# HB9IIU Jetson DATV Transmitter
 
-Rebuilding a DATV (amateur TV over satellite) streaming setup, one small
-working step at a time. `old_project_TO_DELETE/` holds the previous,
-more complex attempt — kept around for reference until it's no longer needed.
+**Got a Jetson Nano 2GB in a drawer? Turn it into a QO-100 DATV transmitter.**
 
-The Stage 0–2 scripts described below (`stage0.py`, `stage1.py`,
-`datv_tx.py`) were superseded by `datv_tx_plus.py` and the web app and
-removed on 2026-09-25 — they're still in the git history. The sections are
-kept as a record of what each step proved.
+![Got a Jetson Nano 2GB in a drawer?](docs/slide2_drawer.png)
 
-## Stage 0 — `stage0.py`
+This project turns an NVIDIA Jetson Nano 2GB and an ADALM-Pluto into a
+complete DVB-S2 transmitter for the QO-100 wideband transponder. Everything is
+controlled from a web page: choose what to send, pick a free slot on the BATC
+spectrum, and press Start.
 
-**What it proves:** the Jetson can encode video with its hardware encoder
-and the result can actually reach another computer over the network.
-Nothing more than that yet — no camera, no web UI, no satellite/RF.
-
-**How it works:**
-1. Runs *on the Jetson Nano* (`192.168.0.178`), via SSH/PyCharm remote interpreter.
-2. Generates a test pattern (`videotestsrc` — a built-in GStreamer color bars
-   pattern, not a real camera).
-3. Encodes it with the Jetson's hardware H.265 encoder (`nvv4l2h265enc`) —
-   chosen over H.264 because DATV over the QO-100 transponder is bandwidth
-   constrained, and H.265 needs noticeably less bitrate for the same quality.
-4. Packages it as MPEG-TS and sends it over the network as UDP to your PC.
+The Jetson's hardware H.265 encoder does the hard work. The Pluto, running
+Evariste's (F5OEO) PlutoDVB2 firmware, does the DVB-S2 modulation.
 
 ```
-[test pattern] -> [Jetson hardware encoder] -> [network: UDP] -> [your PC / VLC]
+[camera / testcard / video] -> [Jetson: H.265 + AAC, MPEG-TS] -> [Pluto: DVB-S2] -> [your upconverter / PA] -> QO-100
 ```
 
-**Running it** (on the Jetson):
-```
-python3 stage0.py --host 192.168.0.5 --port 5000
-```
-- `--host` — the IP of the machine that will watch the stream (your PC).
-- `--port` — which UDP port to send it on (default `5000`).
-- `--bitrate-kbps` — video bitrate (default `3000`).
+## What you need
 
-**Watching it** (on your PC, in VLC):
-`Media > Open Network Stream >` `udp://@:5000`
+![Jetson Nano 2GB](docs/slide1_what_is_a_jetson.png)
 
-**Note:** if nothing shows up, check that your PC's firewall allows
-incoming UDP on that port — Windows blocks unsolicited inbound traffic
-by default.
+- **Jetson Nano 2GB Developer Kit** with a good 5 V / 3 A USB-C supply
+- **32 GB microSD card**
+- **ADALM-Pluto** with the latest
+  [PlutoDVB2 firmware by F5OEO](https://github.com/F5OEO/plutosdr-fw/releases),
+  connected to the Jetson by USB
+- **Network connection** for the Jetson (the BATC spectrum comes from the internet)
+- **Your QO-100 uplink**: amplifier, dish, feed
+- **A receiver** to watch your own signal, e.g. MiniTioune or OpenTuner
+- Optional: a **USB webcam** (tested with a Logitech C920), a **USB stick** for
+  your own videos, and a **relay module** for the PA (see below)
+- An **amateur radio licence** that allows you to transmit on QO-100
 
-## Stage 1 — `stage1.py`
+## Quick start: the ready-to-flash SD card image
 
-Same pipeline as Stage 0, but the source is a real camera instead of a
-generated test pattern. On startup it detects connected cameras under
-`/dev/video*` and asks in the terminal which one to stream:
+![Get the SD card image](docs/slide3_sd_card_image.png)
 
-- **CSI camera** (Sony IMX219 sensor) — via `nvarguscamerasrc`. Includes
-  `--flip-method` (default `2`, 180°) since the camera is physically
-  mounted upside-down, and `--wbmode`/`--saturation` for white balance tuning.
-- **USB webcam** (e.g. Logitech C920) — via `v4l2src`, MJPEG capture, plus
-  **audio** from its built-in microphone (AAC via `voaacenc`, a software
-  encoder — the Jetson has no hardware audio encoder, only hardware video).
-  The CSI camera has no microphone, so that path stays video-only.
+1. **Download** the image `jetson.img.xz` (about 5.6 GB):
+   [Google Drive](https://drive.google.com/file/d/1KOO9mWcRhIP5yVT3PENrq5p7Ek5pGANZ/view?usp=sharing)
+2. **Flash** it with [Raspberry Pi Imager](https://www.raspberrypi.com/software/):
+   *Choose OS → Use custom → jetson.img.xz* (no need to unzip), choose the card, *Write*.
+   Tested and working on a 32 GB card. (balenaEtcher failed during validation
+   in our tests, so we don't recommend it.)
+   On Linux: `xzcat jetson.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync`,
+   then `sudo sgdisk -e /dev/sdX`.
+3. **Boot** the Jetson with the Pluto plugged in.
+4. **Open** `http://jetson-nano.local` in a browser on the same network.
+5. Go to **Setup** and enter **your callsign**.
+6. **Go on air in 3 clicks:** select a source, pick a free BATC slot, start the stream.
 
-```
-[camera (+ mic for USB)] -> [Jetson hardware encoder] -> [network: UDP] -> [your PC / VLC]
-```
+Linux login for SSH: user `daniel`, password `a`. Please change it with `passwd`.
 
-**Known limitation — CSI camera pink/magenta color tint:** the CSI camera
-module appears to be missing an IR-cut filter (a "NoIR" variant), letting
-extra infrared light through and skewing colors pink, especially indoors.
-White balance and saturation tuning can't fully correct this — it's a
-hardware limitation, not a pipeline bug. Parked for now since it doesn't
-block progress on the actual DATV/RF pipeline; revisit later by checking
-for a missing physical IR filter or swapping the camera module.
-**The USB webcam (C920) has normal colors and is confirmed working** —
-prefer it over the CSI camera until the tint issue is resolved.
+The image uses 20 GB of the card. On a bigger card the rest stays unused
+(you can grow the partition later with GParted).
 
-## Stage 2 — `datv_tx.py` — real QO-100 DATV transmission over the Pluto
+## Features
 
-**This is the big milestone: a single script that configures the Pluto,
-streams live camera + audio to it, and produces a real, receiver-confirmed
-DVB-S2 lock on QO-100 frequencies.** No arguments needed — just run it,
-Ctrl+C to stop (which cleanly keys PTT off first).
+- **Three sources**
+  - **Testcard**: still test pictures with a short melody, plus a live
+    station clock (SBB style) with test tones
+  - **Camera**: live picture and sound from a USB webcam
+  - **Video**: your own video files, prepared once and then sent from a USB stick
+- **BATC wideband spectrum** in the page: free channels show green, busy ones
+  red. Click a green one to set the frequency.
+- **Local Pluto RX spectrum**, so you can see your own carrier right away
+- **On-screen overlays**: callsign, clock, frequency, top/bottom banners and
+  a scrolling text line
+- **TX power control**, which always goes back to 0% when you stop
+- **Video Library** (`http://jetson-nano.local:8088`): upload a video from any
+  browser. The Jetson converts it for DATV (this takes about as long as the
+  video itself).
+- **Optional PA relay** that keeps your amplifier off while the Pluto starts up
+- Runs as a service: switch on the Jetson and the web page is there
 
-```
-[C920 camera + mic] -> [Jetson hardware H.265 encoder] -> [UDP :8282] -> [Pluto: DVB-S2 modulator] -> [RF]
-```
+## Transmission settings
 
-**The Pluto's firmware:** stock/factory Pluto firmware can't do DATV at
-all — it's just a raw radio. This project uses
-[F5OEO's plutosdr-fw ("PlutoDVB2")](https://github.com/F5OEO/plutosdr-fw/releases),
-which turns the Pluto into a standalone DVB-S2 transmitter with its own
-onboard MQTT broker (port `1883`, credentials `root`/`analog`) for control.
+All modes send 1280×720 at 25 fps, H.265 video and 32 kbps AAC audio,
+DVB-S2 QPSK, long frames, pilots on.
 
-**How we actually learned the protocol:** not by guessing — by reading
-[DATV-Red](https://github.com/Psynosaur/DATV-Red)'s real Node-RED source
-(`.node-red/flows.json`), which is the actual PC-side control app this
-firmware is designed to work with. That's where the real MQTT topic
-scheme, payload formats, and a genuine working preset (`profiles/p1.json`)
-came from — not the abandoned old project.
+| Symbol rate | FEC | Video bitrate (testcard / camera / video) |
+|---|---|---|
+| 333 kS/s | 2/3 | 292 / 298 / 292 kbps |
+| 333 kS/s | 3/4 | 342 / 350 / 342 kbps |
+| 500 kS/s | 2/3 | 498 / 498 / 498 kbps |
+| 500 kS/s | 3/4 | 575 / 575 / 575 kbps |
 
-**Confirmed protocol details:**
-- Video delivery: MPEG-TS over **UDP to `<pluto_ip>:8282`**.
-- Control: MQTT on the Pluto itself, topics `cmd/pluto/<callsign>/...`
-  (commands) and `dt/pluto/<callsign>/...` (telemetry it publishes back).
-- DVB-S2 settings used (matching DATV-Red's real preset): symbol rate
-  `333000`, `FEC 4/5`, `frame long`, no pilots, QPSK.
+These bitrates were measured on real hardware, not just calculated. Each one
+fits safely inside the DVB-S2 channel, so the stream never runs out of room.
+The encoder uses a 4 s GOP and 4 reference frames, similar to what OBS with
+Easy DATV uses.
 
-**A real firmware bug we found and fixed:** publishing `tx/mute` over
-MQTT does **not** reliably power up the Pluto's TX local oscillator on
-this firmware build — the modulator can look fully configured and
-"unmuted" while no RF is ever actually emitted. Confirmed by directly
-reading/writing the real hardware attribute
-`/sys/bus/iio/devices/iio:device0/out_altvoltage1_TX_LO_powerdown`
-(`0` = on, `1` = off) over SSH, and observing an actual DVB-S2 lock
-appear/disappear on a receiver as it's toggled. `datv_tx.py` sets this
-directly as the real PTT mechanism, not just the MQTT topic.
+**Not sure what to choose?** Keep SR 333 and FEC 3/4 (the defaults). SR 500
+gives a better picture but needs a stronger signal. FEC 2/3 is more robust
+when reception is difficult.
 
-**Also found: a picture-freezing bug from a missing encoder setting.**
-The Jetson's hardware encoder needs an explicit `iframeinterval` (keyframe
-interval) — without it, video can look frozen (same class of bug fixed
-earlier in Stage 1's camera pipeline, but not carried over when this
-script was first written). Fixed by setting `iframeinterval={FPS}` plus
-`queue` elements around the encoder.
+## The PA relay (optional)
 
-**Video bitrate must fit the DVB-S2 channel capacity**, or the modulator
-silently refuses to key up: at `SR=333000`/`FEC=4/5` the channel carries
-about 528 kbps total. Currently split as ~380 kbps video + 48 kbps audio,
-matching DATV-Red's own real preset proportions.
+The Pluto can send short **full-power spikes** while it starts up or is
+reconfigured, whatever the power setting. These can damage a driver or PA.
+The relay output keeps the PA off until the Pluto's signal is clean and
+stable, and only switches on when you press *Engage PA relay*. It drops out
+by itself when you stop, when the stream ends, or when the signal becomes
+unstable.
 
-**The Pluto's IP is found automatically** on startup (mDNS `_iio._tcp`,
-falling back to its USB default `192.168.2.1`) — no IP to hardcode or
-type in.
+- Output: **physical pin 18** of the Jetson's 40-pin header (ground on e.g. pin 20)
+- Engaged = 3.3 V, off = 0 V
 
-**Known cosmetic gap:** the receiver shows "Program: Station1" /
-"Provider: ?" instead of a real name — GStreamer's `mpegtsmux` has no
-property for DVB SDT service name/provider (confirmed via
-`gst-inspect-1.0`), unlike ffmpeg's muxer which DATV-Red uses for this.
-Fixing it would mean switching muxers or post-processing with TSDuck;
-left alone since it's purely a display label with no functional effect.
+> ⚠️ Pin 18 is the **physical pin number**, not "GPIO18" in Raspberry Pi
+> naming. The pin only gives a few milliamps. Use a relay module with a
+> 3.3 V logic input, never a bare relay coil.
 
-## Roadmap
+## Good manners on QO-100
 
-1. ~~Stage 0 — hardware encode + network delivery~~ ✅
-2. ~~Swap the test pattern for a real camera~~ ✅ (see color tint limitation above)
-3. ~~PlutoSDR / RF output for real QO-100 transmission~~ ✅ (`datv_tx.py`,
-   see Stage 2 above — confirmed with a real receiver lock, picture, and audio)
-4. Wrap it in a minimal web control endpoint
-5. Build a UI on top
+- Only use free (green) channels.
+- **Your signal must always stay below the beacon.**
+- Start with low TX power and raise it slowly while you watch the BATC spectrum.
+- Keep test transmissions short.
+- Make sure your callsign is set correctly. It is shown in the picture.
 
-## Tools — `tools/`
+## Running from source
 
-Standalone diagnostics, not used by the app:
+The SD card image is the easy way. If you want to work on the code:
 
-- `pluto_mqtt_diagnostic.py` — sends the PlutoDVB2 MQTT configuration
-  commands one at a time (RF muted) and stops at the first one that isn't
-  acknowledged.
-- `rf_hardware_test.py` — steps the Pluto's bare TX LO over a few
-  frequencies (no DVB-S2), to check the RF chain on a spectrum analyzer.
-- `lime_cli_test.py` — LimeSDR Mini experiment: C920 camera + mic through
-  DATV-Linux's `dvbs2_tx`, using the camera profiles from `dvbs2_profiles.py`.
+- The app lives in `~/jetson-stream-panel` on the Jetson, with a Python
+  virtual environment in `.venv`.
+- `app.py` is the web app (port 80). `fileUploader/` is the Video Library
+  (port 8088).
+- The systemd units in `system/` start both at boot. Each file explains how
+  to install it.
+- Logs: `journalctl -u datv-app -f` and `journalctl -u datv-fileuploader -f`
 
-The PlutoDVB2 firmware source cited in code comments lives locally in
-`reference/pluto-ori/` (git-ignored; upstream is F5OEO's pluto-ori-ps).
+### Repository layout
+
+| Path | What it is |
+|---|---|
+| `app.py`, `templates/`, `static/` | Web app |
+| `datv_engine.py`, `datv_web_worker.py` | Starts and stops a transmission |
+| `datv_tx_plus.py` | GStreamer pipelines, Pluto setup, overlays |
+| `dvbs2_profiles.py` | Symbol rate / FEC / bitrate table |
+| `pa_relay.py`, `pa_relay_gpio.py`, `pluto_signal_stability.py` | PA relay logic |
+| `fileUploader/` | Video Library: upload and conversion |
+| `testcards/` | Testcard pictures |
+| `tuning/` | Tools used to measure the safe bitrates |
+| `tools/` | Stand-alone Pluto diagnostics |
+| `system/` | systemd services and USB stick automount |
+| `tests/` | Unit tests |
+
+## Credits
+
+- **Evariste F5OEO** for the PlutoDVB2 firmware, which makes all of this possible
+- **[DATV-Red](https://github.com/Psynosaur/DATV-Red)**, whose source showed
+  how to control the PlutoDVB2 firmware over MQTT
+- **BATC** for the QO-100 wideband spectrum monitor
+- **AMSAT-DL** and everyone who keeps QO-100 running
+
+## License
+
+MIT, see [LICENSE](LICENSE).
+
+73 de **HB9IIU**

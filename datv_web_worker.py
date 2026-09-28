@@ -2,7 +2,7 @@
 
 This file contains no replacement GStreamer logic. It supplies web-selected
 values to datv_tx_plus.py and then runs that module's original main() unchanged.
-One dispatcher handles all three SOURCE modes (testcard/camera/video) - each
+One dispatcher handles all SOURCE modes (testcard/camera/video/clock) - each
 just patches the specific interactive prompt(s) that mode would otherwise
 block on (input() has no real terminal to read from in this subprocess).
 """
@@ -33,7 +33,8 @@ def _bool_arg(value):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", required=True, choices=("testcard", "camera", "video"))
+    parser.add_argument("--source", required=True,
+                        choices=("testcard", "camera", "video", "clock"))
     parser.add_argument("--profile", required=True, choices=sorted(tx.PROFILES))
     parser.add_argument("--gain", required=True, type=float)
     parser.add_argument("--frequency", required=True, type=int)

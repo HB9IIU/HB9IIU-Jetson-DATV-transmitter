@@ -257,12 +257,22 @@ const paRelayStatus = document.querySelector('#pa-relay-status');
 const paRelayEngageButton = document.querySelector('#pa-relay-engage-button');
 const paRelayDisengageButton = document.querySelector('#pa-relay-disengage-button');
 
+// Short labels - they sit next to the signal summary in card 3's header and
+// must never wrap onto their own line (that made the card jump in height);
+// the full explanation is the tooltip (PA_RELAY_TITLE).
 const PA_RELAY_TEXT = {
-  idle: 'PA relay: idle',
-  waiting: 'NOT READY (spectrum unstable)',
-  ready: 'READY — confirm to engage',
-  engaged: 'PA ENGAGED — LIVE',
-  fault: 'RELAY FAULT',
+  idle: 'PA: idle',
+  waiting: 'PA: not ready',
+  ready: 'PA: ready',
+  engaged: 'PA: ENGAGED',
+  fault: 'PA: FAULT',
+};
+const PA_RELAY_TITLE = {
+  idle: 'PA relay idle - no transmission',
+  waiting: 'PA relay not ready - the local RX spectrum is not stable yet',
+  ready: 'PA relay ready - press "Engage PA relay" to power the PA',
+  engaged: 'PA relay engaged - PA powered, live',
+  fault: 'PA relay fault',
 };
 const PA_RELAY_CLASS = {
   idle: 'text-secondary',
@@ -275,11 +285,12 @@ const PA_RELAY_CLASS = {
 function renderRelayStatus(data) {
   if (!paRelayStatus) return;
   const state = data.state || 'idle';
-  const label = (state === 'fault' && data.fault_reason)
-    ? `${PA_RELAY_TEXT.fault}: ${data.fault_reason}`
-    : (PA_RELAY_TEXT[state] || state);
+  const label = PA_RELAY_TEXT[state] || state;
   paRelayStatus.innerHTML = `<span class="telemetry-dot me-2"></span>${label}`;
-  paRelayStatus.className = `small fw-semibold ms-auto ${PA_RELAY_CLASS[state] || 'text-secondary'}`;
+  paRelayStatus.title = (state === 'fault' && data.fault_reason)
+    ? `${PA_RELAY_TITLE.fault}: ${data.fault_reason}`
+    : (PA_RELAY_TITLE[state] || label);
+  paRelayStatus.className = `small fw-semibold text-nowrap ms-auto ${PA_RELAY_CLASS[state] || 'text-secondary'}`;
   paRelayEngageButton?.classList.toggle('d-none', state !== 'ready');
   paRelayDisengageButton?.classList.toggle('d-none', state !== 'engaged' && state !== 'fault');
 }
@@ -291,8 +302,9 @@ async function fetchRelayStatus() {
     if (!response.ok) throw new Error('Relay status request failed');
     renderRelayStatus(await response.json());
   } catch (_error) {
-    paRelayStatus.innerHTML = '<span class="telemetry-dot me-2"></span>PA relay: unavailable';
-    paRelayStatus.className = 'small fw-semibold ms-auto text-secondary';
+    paRelayStatus.innerHTML = '<span class="telemetry-dot me-2"></span>PA: unavailable';
+    paRelayStatus.title = 'PA relay status unavailable';
+    paRelayStatus.className = 'small fw-semibold text-nowrap ms-auto text-secondary';
     paRelayEngageButton?.classList.add('d-none');
     paRelayDisengageButton?.classList.add('d-none');
   }
@@ -470,6 +482,10 @@ copyLogButton?.addEventListener('click', async () => {
 
 function setSourceControlsDisabled(disabled) {
   sourceOptions.forEach((input) => { input.disabled = disabled; });
+  // While on air the source can't be changed anyway - collapse card 1 to
+  // just its three source buttons (the active one stays highlighted) to
+  // save vertical space; everything comes back on Stop.
+  document.querySelector('#source-card')?.classList.toggle('source-collapsed', disabled);
   [cameraSelect, audioSelect, testcardSelect, videoSelect,
     testcardPrevButton, testcardNextButton,
     frequencyInput, symbolRateSelect, fecSelect].forEach((element) => {

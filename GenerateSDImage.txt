@@ -1,0 +1,130 @@
+GENERATE A SHAREABLE JETSON SD CARD IMAGE
+=========================================
+
+Result: jetson.img.xz (~5-6 GB), fits on any 32 GB card or larger.
+Works because the APP partition (partition 1, the last one on the card) is
+kept at 20 GB = 40960000 sectors, ending at sector 40988671.
+Do NOT use PiShrink. Do NOT change the partition layout except with GParted
+(see step 6).
+
+The card is always /dev/sde on ZATOC. Check it in step 4 every time!
+  /dev/sde  = the whole card
+  /dev/sde1 = the APP partition (Linux system, 19.5G)
+
+
+PART A - ON THE JETSON (ssh daniel@jetson-nano.local)
+-----------------------------------------------------
+
+1. Stop any transmission in the web UI.
+
+2. Clear the upload history and the list of known USB sticks:
+
+   sudo systemctl stop datv-fileuploader
+   rm -f ~/jetson-stream-panel/fileUploader/state/*.json ~/jetson-stream-panel/fileUploader/state/*.log
+   echo '{}' > ~/jetson-stream-panel/usb_video_key_registry.json
+
+3. Shut down:
+
+   history -c && sudo poweroff
+
+   Wait until the green LED is off, unplug power, take out the card.
+
+
+PART B - ON UBUNTU (ssh daniel@zatoc.local)
+-------------------------------------------
+
+4. Put the card in the reader and check it is sde:
+
+   lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT
+
+   It must look like this (sde1 = 19.5G ext4, 14 partitions):
+
+   sde      28.6G
+   ├─sde1   19.5G ext4
+   ├─sde2    128K
+   ├─ ...
+   └─sde14   128K
+
+   If the card is NOT sde, stop - all commands below use sde.
+
+5. Check the layout:
+
+   sudo parted -s /dev/sde unit s print
+
+   The last line MUST be:   1  28672s  40988671s  40960000s  ext4  APP
+   If yes -> go to step 7.
+
+6. Only if APP is bigger (e.g. the card was expanded): open GParted,
+   shrink /dev/sde1 to exactly 20000 MiB, Apply, then repeat step 5.
+
+7. Unmount (errors "not mounted" are fine):
+
+   sudo umount /dev/sde*
+
+8. Zero the free space inside APP (makes the image compress small):
+
+   sudo e2fsck -fy /dev/sde1
+   sudo zerofree -v /dev/sde1
+
+   (Install zerofree once with: sudo apt install zerofree)
+   (e2fsck messages like "extent tree could be narrower. Optimize?" are
+   harmless - -y answers yes automatically.)
+
+9. Copy the card into an image file (about 4 minutes):
+
+   sudo dd if=/dev/sde of=~/jetson.img bs=1M count=20015 status=progress conv=fsync
+
+   Must end with: 20987248640 bytes copied
+
+10. Fix the partition table inside the image and check it:
+
+   sudo sgdisk -e ~/jetson.img && sudo sgdisk -v ~/jetson.img
+
+   Warnings about "backup header" and "2048-sector boundary" are normal.
+   The last lines MUST say: No problems found.
+
+11. Compress (about 20 minutes). Rename or move an older jetson.img.xz first,
+    xz will not overwrite it:
+
+   sudo chown daniel: ~/jetson.img
+   xz -T0 -6 -v ~/jetson.img
+
+12. Test the compressed file:
+
+   xz -t -v ~/jetson.img.xz
+
+   Done: ~/jetson.img.xz is the file to share.
+
+
+PART C - TEST IT (recommended)
+------------------------------
+
+13. Put a spare card (32 GB or more) in the reader and check it is sde:
+
+   lsblk -o NAME,SIZE,MODEL
+
+   (It will show a different size and partitions than in step 4 - the
+   important thing is that sde is the spare card and not your SSD.)
+
+14. Flash:
+
+   xzcat ~/jetson.img.xz | sudo dd of=/dev/sde bs=4M status=progress conv=fsync
+
+15. Move the backup partition table to the end of the card:
+
+   sudo sgdisk -e /dev/sde
+
+16. Boot the Jetson from it. If you get a kernel panic ("corrupted shared
+    library"), the card is bad - try another one (happened with a 58.6 GB card).
+
+
+FLASHING INSTRUCTIONS FOR OTHER USERS
+-------------------------------------
+- Windows/Mac: Raspberry Pi Imager (raspberrypi.com/software):
+  Choose OS -> "Use custom" -> jetson.img.xz (no unzipping) -> choose the
+  card -> Write. (balenaEtcher failed at "Validating" on 2026-09-28 with the
+  same file and card - don't recommend it.)
+- Linux: steps 14 + 15 above (with their own card name instead of sde).
+- Login: user daniel, password a
+- The system uses 20 GB; the rest of a bigger card stays unused
+  (can be added later with GParted).

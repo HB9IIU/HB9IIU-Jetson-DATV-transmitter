@@ -1,4 +1,5 @@
 """H.264 transcoding to 1280x720 (hardware-decodable on the Jetson), durable job state."""
+import hashlib
 import json
 import math
 import os
@@ -8,6 +9,7 @@ import subprocess
 import threading
 import time
 import uuid
+from werkzeug.exceptions import BadRequest
 from werkzeug.utils import secure_filename
 from storage import USBStorage, StorageError
 # storage.py already put the project root on sys.path - same conversion
@@ -19,6 +21,7 @@ FORMATS = 'mov,matroska,webm,avi,asf,flv,mpeg,mpegts,mpegvideo,h264,hevc,av1,ivf
 INPUT_OPTIONS = ['-protocol_whitelist', 'file', '-format_whitelist', FORMATS]
 RESOLUTIONS = [(1280, 720)]
 ORIGINAL_FOLDER = 'original videos'
+UPLOAD_INTERRUPTED = 'Upload interrupted (page reloaded or closed, or connection lost) - please upload again'
 PREVIEW_FOLDER = 'preprocessed_{}x{}'.format(*RESOLUTIONS[-1])
 
 
@@ -54,6 +57,7 @@ class Engine:
         os.makedirs(self.state, exist_ok=True)
         self.lock = threading.RLock()
         self.jobs = {}
+        self.durations = {}
         self.active = None
         self.ffmpeg = os.path.join(BASE, 'bin', 'ffmpeg')
         self.ffprobe = os.path.join(BASE, 'bin', 'ffprobe')
@@ -85,31 +89,53 @@ class Engine:
             jobs = [j for j in self.jobs.values() if j['status'] == 'success']
         try:
             fd = self.usb.open_subfolder(PREVIEW_FOLDER)
-        except StorageError:
+        except (StorageError, FileNotFoundError):
+            # FileNotFoundError: a confirmed key that was wiped or reformatted
+            # has no preprocessed folder yet - the first upload creates it.
             return []
         try:
-            present = {n.casefold() for n in os.listdir(fd)}
+            by_name = {j['output_name'].casefold(): j for j in jobs}
             items = []
-            for job in jobs:
-                if job['output_name'].casefold() not in present:
+            # Every .mkv in the folder, not only this service's own jobs - a
+            # key prepared earlier (or on another Jetson) keeps its videos.
+            for name in os.listdir(fd):
+                if name.startswith('.') or not name.lower().endswith('.mkv'):
                     continue
                 try:
-                    size = os.stat(job['output_name'], dir_fd=fd).st_size
+                    st = os.stat(name, dir_fd=fd)
                 except OSError:
                     continue
-                items.append(dict(id=job['id'], output_name=job['output_name'],
-                                   original_name=job['original_name'], duration=job['duration'], size=size))
+                job = by_name.get(name.casefold())
+                if job:
+                    items.append(dict(id=job['id'], output_name=name, original_name=job['original_name'],
+                                      duration=job['duration'], size=st.st_size))
+                else:
+                    items.append(dict(id='file-' + hashlib.sha1(name.encode()).hexdigest(), output_name=name,
+                                      original_name='', duration=self.file_duration(fd, name, st),
+                                      size=st.st_size))
             items.sort(key=lambda i: i['output_name'].casefold())
             return items
         finally:
             os.close(fd)
 
+    def file_duration(self, fd, name, st):
+        """ffprobe duration of a video with no job record, cached by name/size/mtime
+        (the status endpoint is polled every few seconds)."""
+        key = (name, st.st_size, st.st_mtime)
+        if key not in self.durations:
+            try:
+                info = self.probe('/proc/self/fd/{}/{}'.format(fd, name), (fd,))
+                self.durations[key] = float(info['format']['duration'])
+            except Exception:
+                self.durations[key] = None
+        return self.durations[key]
+
     def delete_video(self, video_id):
         with self.lock:
-            job = self.jobs.get(video_id)
-            if not job or job['status'] != 'success':
+            item = next((i for i in self.catalog() if i['id'] == video_id), None)
+            if item is None:
                 raise ValueError('Video is not in the USB catalog')
-            name = job['output_name']
+            name = item['output_name']
             os.close(self.usb.open(True))
             for width, height in RESOLUTIONS:
                 try:
@@ -127,7 +153,7 @@ class Engine:
                 path = os.path.join(self.state, video_id + suffix)
                 if os.path.exists(path):
                     os.remove(path)
-            del self.jobs[video_id]
+            self.jobs.pop(video_id, None)
 
     def reserve(self, original, output, size):
         output = normalized_name(output)
@@ -179,9 +205,17 @@ class Engine:
                     last_check = time.monotonic()
                     with os.fdopen(raw, 'wb') as f:
                         while remaining:
-                            chunk = stream.read(min(1024*1024, remaining))
+                            try:
+                                chunk = stream.read(min(1024*1024, remaining))
+                            except BadRequest:
+                                # werkzeug's ClientDisconnected: the browser went away
+                                # mid-upload (page reloaded/closed, network drop) - it
+                                # used to surface as a cryptic "400 Bad Request".
+                                chunk = b''
                             if not chunk:
-                                raise ValueError('Upload interrupted; partial original retained')
+                                # The partial original is deleted below (uploaded_ok
+                                # stays False), so the user simply uploads again.
+                                raise ValueError(UPLOAD_INTERRUPTED)
                             f.write(chunk)
                             remaining -= len(chunk)
                             if time.monotonic()-last_check > 3:
@@ -278,7 +312,13 @@ class Engine:
                             if len(pair) == 2:
                                 values[pair[0]] = pair[1]
                         if now-last_save >= 1:
-                            seconds = max(0, float(values.get('out_time_us', '0'))/1000000)
+                            # 'N/A' until ffmpeg has written its first frame - a slow
+                            # source (e.g. 1080p VP9, decoded in software) reports that
+                            # first; float('N/A') used to abort the whole conversion.
+                            try:
+                                seconds = max(0, float(values.get('out_time_us', '0'))/1000000)
+                            except ValueError:
+                                seconds = 0
                             speed = values.get('speed', '').strip().rstrip('x')
                             try:
                                 speed = float(speed)

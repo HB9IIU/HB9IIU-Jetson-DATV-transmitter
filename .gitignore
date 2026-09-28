@@ -40,3 +40,8 @@ preprocessed_*x*/
 # tuning/results/ (small text summaries) stays versioned.
 tuning/clips/
 tuning/runs/
+
+# Local Python environment and Video Library runtime state
+.venv/
+fileUploader/state/
+.~lock.*#

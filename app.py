@@ -15,7 +15,7 @@ except ImportError:
     mqtt = None
 
 from camera_preview import stop_active_preview, stream_camera
-from datv_engine import DatvEngine
+from datv_engine import SBB_CLOCK_TESTCARD, DatvEngine
 from dvbs2_profiles import VIDEO_PROFILE_NAMES, PROFILES
 from pluto_fft_bridge import get_latest_frame, start_background_reader
 import overlay_settings
@@ -30,9 +30,24 @@ import usb_video_key
 logging.getLogger("werkzeug").setLevel(logging.INFO)
 
 app = Flask(__name__)
+
+
+@app.context_processor
+def static_versioning():
+    """static_url('css/datv.css') -> /static/css/datv.css?v=<mtime>: Flask
+    lets browsers cache static files for 12 h, so CSS/JS changes otherwise
+    only showed up after Ctrl+F5 (or half a day later)."""
+    def static_url(filename):
+        try:
+            version = int(os.path.getmtime(os.path.join(app.static_folder, filename)))
+        except OSError:
+            version = 0
+        return url_for("static", filename=filename, v=version)
+    return {"static_url": static_url}
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 STREAM_ENGINE = DatvEngine(PROJECT_DIR)
 TESTCARD_DIR = os.path.join(PROJECT_DIR, "testcards")
+SBB_CLOCK_PREVIEW = os.path.join(PROJECT_DIR, "static", "img", "sbb_clock_preview.png")
 # Matches templates/index.html's hardcoded <option selected> defaults for
 # #symbol-rate/#fec - used to pick which preprocessed_<W>x<H>/ folder to
 # show on first page load, before any SR/FEC change (see
@@ -349,6 +364,14 @@ def detect_testcards():
                     # name used before would otherwise keep showing the old one.
                     "version": int(os.path.getmtime(os.path.join(TESTCARD_DIR, name))),
                 })
+    # Last carousel entry: funnyClock's live SBB station clock - not an
+    # image file, datv_engine.start_testcard() turns it into SOURCE "clock".
+    # Previewed with a static still (static/img/sbb_clock_preview.png).
+    files.append({
+        "value": SBB_CLOCK_TESTCARD,
+        "label": "SBB Clock (live)",
+        "version": int(os.path.getmtime(SBB_CLOCK_PREVIEW)) if os.path.isfile(SBB_CLOCK_PREVIEW) else 0,
+    })
     return files
 
 
@@ -432,6 +455,7 @@ def index():
         video_devices=detect_video_devices(),
         audio_devices=detect_audio_inputs(),
         testcards=detect_testcards(),
+        sbb_clock_testcard=SBB_CLOCK_TESTCARD,
         prepared_videos=prepared_videos,
     )
 
@@ -468,6 +492,11 @@ def api_videos():
 @app.route("/setup")
 def setup():
     return render_template("setup.html")
+
+
+@app.route("/help")
+def help_page():
+    return render_template("help.html")
 
 
 @app.route("/api/usb-key/candidates")
@@ -772,7 +801,7 @@ def camera_preview():
 
 @app.route("/testcard-preview/<path:filename>")
 def testcard_preview(filename):
-    allowed = {item["value"] for item in detect_testcards()}
+    allowed = {item["value"] for item in detect_testcards()} - {SBB_CLOCK_TESTCARD}
     if filename not in allowed:
         abort(404)
     return send_from_directory(TESTCARD_DIR, filename)

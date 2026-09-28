@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Quick start guide for the Jetson Nano DATV transmitter">
+  <title>Jetson DATV — Help</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="{{ static_url('css/datv.css') }}" rel="stylesheet">
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg sticky-top">
+    <div class="container-xxl py-2">
+      <a class="navbar-brand fs-4" href="{{ url_for('index') }}" aria-label="Jetson DATV home">JETSON <span class="text-primary">DATV</span></a>
+      <button class="navbar-toggler" type="button" disabled aria-label="Navigation"><span class="navbar-toggler-icon"></span></button>
+      <div class="collapse navbar-collapse">
+        <ul class="navbar-nav ms-5 gap-lg-3">
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('index') }}">Home</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('setup') }}">Setup</a></li>
+          <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a></li>
+          <li class="nav-item"><span class="nav-link active">Help</span></li>
+        </ul>
+        <span class="nav-byline ms-auto">By HB9IIU</span>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container-xxl pb-4 pb-lg-5 main-top help-page">
+    <h1 class="h3 fw-bold mb-2">Quick start guide</h1>
+    <p class="text-muted-custom mb-4">Your first transmission in a few minutes. Follow the steps in order — the home page is laid out the same way (cards 1, 2 and 3).</p>
+
+    <article class="surface p-3 p-lg-4 mb-4">
+      <h2 class="h5 fw-bold mb-3">✅ Before you start</h2>
+      <ul class="help-list mb-0">
+        <li>The <strong>Pluto</strong> is connected to the Jetson with its USB cable, and its lights are on.</li>
+        <li>The Pluto runs the latest <strong>PlutoDVB2</strong> firmware by Evariste (F5OEO) — the custom firmware that turns it into a DATV transmitter. Download: <a href="https://github.com/F5OEO/plutosdr-fw/releases" target="_blank" rel="noopener">github.com/F5OEO/plutosdr-fw/releases</a>.</li>
+        <li>The <strong>antenna / dish and power amplifier</strong> are connected. Never transmit into an open connector.</li>
+        <li>You have a <strong>receiver</strong> to watch your own signal (for example MiniTioune or OpenTuner, with an LNB on the same dish).</li>
+        <li>You hold an <strong>amateur radio licence</strong> that allows transmitting to QO-100, and your callsign is set on the <a href="{{ url_for('setup') }}">Setup</a> page.</li>
+      </ul>
+    </article>
+
+    <article class="surface p-3 p-lg-4 mb-4">
+      <div class="d-flex align-items-center gap-3 mb-3"><span class="step-number">1</span><h2 class="h5 fw-bold mb-0">Choose what to send</h2></div>
+      <p>Card 1 on the home page. Click one of the three buttons:</p>
+      <ul class="help-list">
+        <li><strong>Testcard</strong> — a still test picture with a little melody. Use the <strong>‹ ›</strong> arrows on the picture to choose one. The last one, <strong>“SBB Clock (live)”</strong>, is a live station clock with test tones.</li>
+        <li><strong>Camera</strong> — live picture and sound from the USB camera. Choose the camera and the microphone below the preview.</li>
+        <li><strong>Video</strong> — a prepared video file. New videos are added in the <a href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a>.</li>
+      </ul>
+      <div class="help-tip">💡 First time? Use the <strong>Testcard</strong>. It is the easiest to check on your receiver.</div>
+    </article>
+
+    <article class="surface p-3 p-lg-4 mb-4">
+      <div class="d-flex align-items-center gap-3 mb-3"><span class="step-number">2</span><h2 class="h5 fw-bold mb-0">Choose where to send it</h2></div>
+      <p>Card 2 shows the <strong>BATC wideband spectrum</strong>: what is on the satellite right now. Below it is a row of small bars — each bar is one channel.</p>
+      <ul class="help-list">
+        <li><span class="help-slot help-slot-free"></span> <strong>Green</strong> = free. <span class="help-slot help-slot-busy"></span> <strong>Red</strong> = somebody is using it.</li>
+        <li><strong>Click a green bar.</strong> Its frequency appears in the <strong>Freq.</strong> box. Never choose a red one.</li>
+        <li><strong>SR</strong> (symbol rate): <strong>333</strong> is narrower and easier to receive. <strong>500</strong> gives a better picture but needs a stronger signal.</li>
+        <li><strong>FEC</strong>: <strong>3/4</strong> gives a better picture, <strong>2/3</strong> is more robust when reception is difficult.</li>
+      </ul>
+      <div class="help-tip">💡 Not sure? Keep <strong>SR 333</strong> and <strong>FEC 3/4</strong> (the defaults).</div>
+    </article>
+
+    <article class="surface p-3 p-lg-4 mb-4">
+      <div class="d-flex align-items-center gap-3 mb-3"><span class="step-number">3</span><h2 class="h5 fw-bold mb-0">Go on air</h2></div>
+      <ol class="help-list">
+        <li><strong>TX power</strong> starts at 0%. Leave it low for now.</li>
+        <li>Press <strong>▶ Start stream</strong>. After a few seconds the button turns red and says <strong>■ Stop stream</strong>.</li>
+        <li>Look at the <strong>Local Pluto RX spectrum</strong> (right). A flat-topped hump means your Pluto is transmitting.</li>
+        <li><em>Only if you use the optional PA relay (see below):</em> wait until card 3 shows <strong>PA: ready</strong>, then press <strong>⚡ Engage PA relay</strong>. If the signal becomes unstable, the relay switches off again by itself.</li>
+        <li>Raise <strong>TX power</strong> slowly while you watch your signal appear in the BATC spectrum.</li>
+        <li>Check your receiver: you should see your picture and hear the sound.</li>
+        <li>When you are done, press <strong>■ Stop stream</strong>. TX power goes back to 0% (and the PA relay switches off) by itself.</li>
+      </ol>
+      <div class="help-warning">⚠️ <strong>Your signal must always stay lower than the beacon</strong> — the big block on the left of the BATC spectrum. If you are as strong as the beacon, reduce TX power immediately.</div>
+    </article>
+
+    <article class="surface p-3 p-lg-4 mb-4">
+      <h2 class="h5 fw-bold mb-3">⚡ The PA relay (optional)</h2>
+      <p>You don't need it — everything works without. It is a safety switch, for example for the <strong>first stage of your power amplifier</strong> (driver / pre-amp):</p>
+      <div class="help-tip mb-3">💡 <strong>Why?</strong> The Pluto can send short <strong>full-power spikes</strong> while it starts up or is reconfigured — whatever the power setting. These spikes can destroy a power amplifier or pre-amp. The relay keeps the PA switched off until the Pluto is running and its signal is clean and stable.</div>
+      <ul class="help-list">
+        <li>It switches on only when <strong>you</strong> press <strong>Engage PA relay</strong>, and only while the Pluto's signal is clean and stable.</li>
+        <li>It switches off <strong>by itself</strong> when you press Stop, when the transmission ends or crashes, or when the signal becomes unstable.</li>
+        <li><strong>Wiring:</strong> physical <strong>pin 18</strong> of the Jetson's 40-pin header (ground e.g. on pin 20). Engaged = <strong>3.3 V</strong>, off = <strong>0 V</strong>.</li>
+      </ul>
+      <div class="help-warning">⚠️ <strong>Pin 18 means the physical pin number</strong> on the header — not “GPIO18” (on Raspberry Pi naming that is a different pin). The pin can only deliver a few milliamps: <strong>use a relay module with a 3.3 V logic input</strong> (transistor or optocoupler). Connecting a bare relay coil directly can damage the Jetson.</div>
+    </article>
+
+    <article class="surface p-3 p-lg-4 mb-4">
+      <h2 class="h5 fw-bold mb-3">🎬 Adding your own videos</h2>
+      <ol class="help-list">
+        <li>A USB stick must be plugged into the Jetson and set up once on the <a href="{{ url_for('setup') }}">Setup</a> page.</li>
+        <li>Open the <a href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a>, choose a file, give it a name and press <strong>Upload &amp; prepare video</strong>.</li>
+        <li>The Jetson now prepares the video. This takes time — roughly as long as the video itself (a 1½-hour film ≈ 80 minutes).</li>
+        <li>When it says <strong>Ready for DATV</strong>, the video appears under <strong>Video</strong> on the home page.</li>
+      </ol>
+      <div class="help-warning">⚠️ While a video is being prepared: <strong>do not unplug the USB stick, do not restart the Jetson or the app</strong>. The preparation would be lost and has to start again.</div>
+    </article>
+
+    <article class="surface p-3 p-lg-4 mb-4">
+      <h2 class="h5 fw-bold mb-3">⚙️ The Setup page</h2>
+      <ul class="help-list mb-0">
+        <li><strong>Callsign</strong> — your callsign, shown in the picture and sent to the Pluto. Changing it restarts the Pluto.</li>
+        <li><strong>Top/bottom banner &amp; marquee</strong> — the title bar, the bottom bar (callsign, clock, frequency) and the scrolling text shown with Camera and Video.</li>
+        <li><strong>Add prepared videos via USB</strong> — choose which USB stick holds your videos.</li>
+        <li><strong>Restart app</strong> — if something is stuck. Never while a video is being prepared.</li>
+      </ul>
+    </article>
+
+    <article class="surface p-3 p-lg-4 mb-4">
+      <h2 class="h5 fw-bold mb-3">🛠️ Something is not working?</h2>
+      <dl class="help-faq mb-0">
+        <dt>“Select a frequency first”</dt>
+        <dd>Click a green bar under the BATC spectrum before pressing Start.</dd>
+        <dt>The BATC spectrum is empty or says DISCONNECTED</dt>
+        <dd>It comes from the internet. Check the Jetson's network connection.</dd>
+        <dt>The RX spectrum still says NO SIGNAL after Start</dt>
+        <dd>Check the Pluto's USB cable, then press Stop and Start again.</dd>
+        <dt>“PA: not ready” does not change (PA relay users)</dt>
+        <dd>The signal is not stable yet. Wait a few seconds. If nothing changes, press Stop and Start again.</dd>
+        <dt>The picture stutters on my receiver</dt>
+        <dd>First try another receiver program or player. The Jetson sends a steady stream.</dd>
+        <dt>My video is not in the list</dt>
+        <dd>It is still being prepared (see the Video Library), or the USB stick is not plugged in.</dd>
+        <dt>A page looks wrong after an update</dt>
+        <dd>Reload the page (F5).</dd>
+      </dl>
+    </article>
+
+    <article class="surface p-3 p-lg-4">
+      <h2 class="h5 fw-bold mb-3">📡 Good manners on QO-100</h2>
+      <ul class="help-list mb-0">
+        <li>Only use free (green) channels.</li>
+        <li>Never be stronger than the beacon.</li>
+        <li>Keep test transmissions short.</li>
+        <li>Your callsign is shown in the picture — make sure it is set correctly on the Setup page.</li>
+      </ul>
+    </article>
+  </main>
+</body>
+</html>

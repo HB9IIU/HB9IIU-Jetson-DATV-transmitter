@@ -44,6 +44,7 @@ MQTT uses the Pluto's default credentials: root/analog.
 
 import math
 import os
+import sys
 import re
 import socket
 import subprocess
@@ -188,7 +189,7 @@ def draw_marquee(overlay, cr, timestamp, duration, width, height, state):
 SR = 500       # symbol rate in kS/s: 333 or 500
 FEC = "2/3"    # DVB-S2 FEC: "2/3" or "3/4"
 
-SOURCE = "video"  # "camera" (live cam+mic), "video" (pick+loop a pre-processed video), or "testcard" (pick+loop a static image from testcards/)
+SOURCE = "video"  # "camera" (live cam+mic), "video" (pick+loop a pre-processed video), "testcard" (pick+loop a static image from testcards/), or "clock" (funnyClock's live SBB station clock)
 
 # (SR, FEC) -> name of the entry to use in PROFILES, one table per SOURCE
 # family - see dvbs2_profiles.py's TESTCARD/CAMERA/VIDEO_PROFILE_NAMES
@@ -199,6 +200,8 @@ _PROFILE_NAMES_BY_SOURCE = {
     "testcard": TESTCARD_PROFILE_NAMES,
     "camera": CAMERA_PROFILE_NAMES,
     "video": VIDEO_PROFILE_NAMES,
+    # A test card with moving hands: same 720p profiles/bitrates as testcard.
+    "clock": TESTCARD_PROFILE_NAMES,
 }
 try:
     PROFILE = _PROFILE_NAMES_BY_SOURCE[SOURCE][(SR, FEC)]
@@ -846,14 +849,37 @@ def read_jetson_cpu_temp_c():
         return int(f.read().strip()) / 1000.0
 
 
+# Previous /proc/stat sample (busy, total jiffies) - the load is the busy
+# share since the last read_jetson_cpu_load_percent() call, i.e. over one
+# telemetry update interval.
+_cpu_load_sample = None
+
+
+def read_jetson_cpu_load_percent():
+    """Average load of all CPU cores since the previous call, or None on
+    the first call (nothing to compare with yet)."""
+    global _cpu_load_sample
+    with open("/proc/stat") as f:
+        # "cpu  user nice system idle iowait irq softirq steal ..."
+        values = [int(v) for v in f.readline().split()[1:]]
+    idle = values[3] + values[4]
+    total = sum(values[:8])
+    previous, _cpu_load_sample = _cpu_load_sample, (total - idle, total)
+    if previous is None or total == previous[1]:
+        return None
+    return 100.0 * (total - idle - previous[0]) / (total - previous[1])
+
+
 def format_telemetry(telemetry, profile):
     """Bottom banner's middle text, e.g.
-    "Jetson CPU 42.5°C | Tx 484 kb/s FEC 3/4 SR333 Fr.: 2405.750 MHz"."""
+    "Jetson CPU 42°C 37% | Tx  2405.750 MHz  SR333  FEC 3/4  484 kb/s"."""
     tx_bitrate = telemetry.get("tx/dvbs2/ts/bitrate")
     tx_bitrate_str = "{:.0f} kb/s".format(int(tx_bitrate) / 1000.0) if tx_bitrate else "--"
-    return "Jetson CPU {:.1f}°C | Tx {} FEC {} SR{} Fr.: {:.3f} MHz".format(
-        read_jetson_cpu_temp_c(), tx_bitrate_str, profile["fec"],
-        profile["symbol_rate"] // 1000, FREQUENCY_HZ / 1e6)
+    cpu_load = read_jetson_cpu_load_percent()
+    cpu_load_str = "{:.0f}%".format(cpu_load) if cpu_load is not None else "--%"
+    return "Jetson CPU {:.0f}°C {} | Tx  {:.3f} MHz  SR{}  FEC {}  {}".format(
+        read_jetson_cpu_temp_c(), cpu_load_str, FREQUENCY_HZ / 1e6,
+        profile["symbol_rate"] // 1000, profile["fec"], tx_bitrate_str)
 
 
 def load_testcard_overlay_config(source_path, width, height):
@@ -1152,6 +1178,28 @@ def new_marquee_state(width, height):
     return {"first_timestamp": None, "text_width": None, "y_offset": top}
 
 
+# Set by main() when SOURCE == "clock": funnyClock/clock_tx.py imported as a
+# module - see load_funny_clock().
+FUNNY_CLOCK = None
+
+
+def load_funny_clock():
+    """For SOURCE == "clock": funnyClock's live SBB station clock, reusing
+    funnyClock/clock_tx.py's own drawing and tone code (dial, hands, "... Hz"
+    labels, TONE_SCHEDULE, frame_wall_time()) instead of a copy, so the
+    standalone script and this source can't drift apart. Only the transmit
+    side is this module's own (Pluto, relay, PTT, web log/stop, PA
+    interlock). The background is drawn once with this run's callsign."""
+    clock_dir = os.path.join(SCRIPT_DIR, "funnyClock")
+    if clock_dir not in sys.path:
+        sys.path.insert(0, clock_dir)
+    import clock_tx
+    clock_tx.CALLSIGN = CALLSIGN
+    clock_tx.render_background(clock_tx.BACKGROUND_PNG)
+    clock_tx.tone_labels = clock_tx.render_tone_labels()
+    return clock_tx
+
+
 def track_video_file_position(pipeline):
     """For SOURCE == "video": returns a dict whose "pts" is kept updated with
     the timestamp of the last video frame that has actually left the
@@ -1201,7 +1249,7 @@ def build_pipeline_description(ip, profile, source_path=None,
     # overlay system and must never enter this branch, see its SOURCE
     # branch below.
     overlay_enabled = (top_bar_enabled or bottom_bar_enabled
-                        or (SOURCE != "testcard" and MARQUEE_ENABLED))
+                        or (SOURCE in ("camera", "video") and MARQUEE_ENABLED))
     width, height = profile["resolution"]
     if SOURCE == "video":
         # Overwrite the same globals load_camera_banner_marquee_config()
@@ -1242,7 +1290,7 @@ def build_pipeline_description(ip, profile, source_path=None,
             "No OVERLAY_STYLES entry for {}x{} - add one (see the comment "
             "above OVERLAY_STYLES).".format(width, height))
     overlay_style = OVERLAY_STYLES[(width, height)]
-    if SOURCE != "testcard" and MARQUEE_ENABLED and (width, height) not in MARQUEE_STYLES:
+    if SOURCE in ("camera", "video") and MARQUEE_ENABLED and (width, height) not in MARQUEE_STYLES:
         raise SystemExit(
             "No MARQUEE_STYLES entry for {}x{} - add one (see the comment "
             "above MARQUEE_STYLES).".format(width, height))
@@ -1302,7 +1350,7 @@ def build_pipeline_description(ip, profile, source_path=None,
                 height - overlay_style["bottom_bar_height"],
                 overlay_style["bottom_bar_alpha"] if bottom_bar_visible else 0.0),
         ]
-        if SOURCE != "testcard" and MARQUEE_ENABLED:
+        if SOURCE in ("camera", "video") and MARQUEE_ENABLED:
             # sink_3 = the marquee strip, linked last below the bars. One
             # alpha for the whole (opaque) strip, like the bars: the band's
             # own transparency. Per-pixel alpha would switch the compositor's
@@ -1444,6 +1492,28 @@ def build_pipeline_description(ip, profile, source_path=None,
             "aacparse !",
             "queue ! mux.",
         ]
+    elif SOURCE == "clock":
+        if (width, height) != (FUNNY_CLOCK.WIDTH, FUNNY_CLOCK.HEIGHT):
+            raise SystemExit("The SBB clock is drawn for {}x{}, profile is {}x{}".format(
+                FUNNY_CLOCK.WIDTH, FUNNY_CLOCK.HEIGHT, width, height))
+        parts += [
+            # Same chain as funnyClock's own pipeline_description(): static
+            # background, hands + tone label drawn per frame by
+            # FUNNY_CLOCK.draw_hands (connected in main()).
+            "filesrc location={} ! pngdec ! imagefreeze !".format(FUNNY_CLOCK.BACKGROUND_PNG),
+            "videoconvert ! videorate ! video/x-raw,framerate={}/1 !".format(FPS),
+            "videoconvert ! video/x-raw,format=BGRA !",
+            "cairooverlay name=clock_hands !",
+            "videoconvert ! {}".format(video_sink),
+
+            # Live tone, switched in place by main() (freq/volume only).
+            "audiotestsrc name=clock_tone wave=sine freq=440 volume=0 is-live=true !",
+            "audioconvert ! audioresample ! audiorate !",
+            "audio/x-raw,format=S16LE,rate=48000,channels=1 !",
+            "voaacenc bitrate={} !".format(profile["audio_bitrate_kbps"] * 1000),
+            "aacparse !",
+            "queue ! mux.",
+        ]
     elif SOURCE == "testcard":
         overlay_config = load_testcard_overlay_config(source_path, width, height)
         callsign_cfg = overlay_config["callsign"]
@@ -1522,7 +1592,7 @@ def build_pipeline_description(ip, profile, source_path=None,
                 width, overlay_style["bottom_bar_height"], FPS),
             "videoconvert ! comp.",
         ]
-        if SOURCE != "testcard" and MARQUEE_ENABLED:
+        if SOURCE in ("camera", "video") and MARQUEE_ENABLED:
             # Linked last, so it becomes sink_3 and sits on top of the
             # picture and the bars (compositor z-order = pad order). Drawn
             # in BGRx (opaque), converted to I420 here - only this strip's
@@ -1565,6 +1635,10 @@ def main():
         source_path = select_testcard_file()
     else:
         source_path = None
+    if SOURCE == "clock":
+        global FUNNY_CLOCK
+        log("🕐 Drawing the SBB clock background...")
+        FUNNY_CLOCK = load_funny_clock()
     global MARQUEE_ENABLED
     if SOURCE in ("camera", "video"):
         top_bar_enabled, bottom_bar_enabled, MARQUEE_ENABLED = ask_banner_and_marquee_settings()
@@ -1628,6 +1702,13 @@ def main():
                     "text", format_volume_banner(TESTCARD_MELODY_VOLUMES[0], start_is_rest))
         # Only exists when SOURCE == "testcard" (see build_pipeline_description).
         elapsed_overlay = gst_pipeline.get_by_name("testcard_elapsed_ms")
+        # Only exist when SOURCE == "clock" (see build_pipeline_description).
+        clock_hands = gst_pipeline.get_by_name("clock_hands")
+        clock_tone = gst_pipeline.get_by_name("clock_tone")
+        if clock_hands is not None:
+            FUNNY_CLOCK.frame_clock["pipeline"] = gst_pipeline
+            clock_hands.connect("draw", FUNNY_CLOCK.draw_hands)
+        clock_playing = None
         bus = gst_pipeline.get_bus()
         gst_pipeline.set_state(Gst.State.PLAYING)
 
@@ -1648,6 +1729,9 @@ def main():
             poll_interval_seconds = min(poll_interval_seconds, TESTCARD_MELODY_TICK_SECONDS)
         if elapsed_overlay is not None:
             poll_interval_seconds = min(poll_interval_seconds, TESTCARD_TIME_OVERLAY_TICK_SECONDS)
+        if clock_tone is not None:
+            # Same 50 ms tick as funnyClock's own loop - tones start on time.
+            poll_interval_seconds = min(poll_interval_seconds, 0.05)
         last_telemetry_update = 0.0
         last_elapsed_update = 0.0
         last_tone_change = time.monotonic()
@@ -1719,6 +1803,14 @@ def main():
                 pending_tone_changes.append(
                     (new_freq, new_volume, now + TESTCARD_AUDIO_DELAY_SECONDS))
                 last_tone_change = now
+            if clock_tone is not None:
+                # Same switching as funnyClock's own main loop.
+                freq = FUNNY_CLOCK.tone_now()
+                if freq != clock_playing:
+                    if freq:
+                        clock_tone.set_property("freq", freq)
+                    clock_tone.set_property("volume", FUNNY_CLOCK.TONE_VOLUME if freq else 0.0)
+                    clock_playing = freq
             while pending_tone_changes and now >= pending_tone_changes[0][2]:
                 freq_to_apply, volume_to_apply, _ = pending_tone_changes.pop(0)
                 tone_source.set_property("freq", freq_to_apply)

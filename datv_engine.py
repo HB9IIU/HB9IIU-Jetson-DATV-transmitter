@@ -14,6 +14,10 @@ import threading
 import time
 
 from dvbs2_profiles import CAMERA_PROFILE_NAMES, TESTCARD_PROFILE_NAMES, VIDEO_PROFILE_NAMES
+
+# Testcard-carousel value that stands for funnyClock's live SBB clock
+# instead of an image file - can't collide with a real file name.
+SBB_CLOCK_TESTCARD = "__sbb_clock__"
 import usb_video_key
 
 LOG_TAIL_CHARS = 4000
@@ -187,6 +191,18 @@ class DatvEngine(object):
             raise ValueError("Unsupported SR/FEC combination")
         _validate_gain(gain_db)
         _validate_frequency(frequency_hz)
+
+        if testcard_name == SBB_CLOCK_TESTCARD:
+            # Not an image: funnyClock's live SBB clock, offered as an extra
+            # entry in the testcard carousel (see app.py's
+            # detect_testcards()) - datv_tx_plus.py's SOURCE "clock".
+            return self._launch([
+                "--source", "clock",
+                "--profile", profile_key,
+                "--gain", str(gain_db),
+                "--frequency", str(frequency_hz),
+                "--callsign", callsign,
+            ])
 
         testcard_dir = os.path.abspath(os.path.join(self.project_dir, "testcards"))
         source_path = os.path.abspath(os.path.join(testcard_dir, testcard_name))

@@ -11,10 +11,10 @@ What it does:
      the mic as raw PCM, into clips/camera_master_raw.mkv. The warmup part
      doubles as an on-screen countdown and lets the camera's auto exposure/
      focus settle; it's cut off afterwards.
-  2. Derives one lossless (FFV1) clip per resolution the tuners use, scaled
-     and frame-rated the same way the on-air pipeline does (FPS from
-     datv_tx_plus.py), named the way tune_profiles.py's TEST_CLIPS_CAMERA
-     expects.
+  2. Derives one near-lossless H.264 clip per resolution the tuners use
+     (CLIP_H264_ARGS), scaled and frame-rated the same way the on-air
+     pipeline does (FPS from datv_tx_plus.py), named the way
+     tune_profiles.py's TEST_CLIPS_CAMERA expects.
 
 An existing set of clips is never overwritten - it's moved into
 clips/old_<timestamp>/ first, so an earlier benchmark stays available for
@@ -59,6 +59,16 @@ CAPTURE_FPS = 30
 # needs, which a static build may not.
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
+
+# H.264 High 4:2:0, not lossless FFV1 (2026-09-27): the Jetson's CPU
+# decoded the 1280x720 FFV1 camera clip at exactly real time (90 s for
+# 90 s), so during a tuning trial - encoder and overlays busy too - it fell
+# behind and dropped frames at random; the same bitrate then measured up
+# to 5% apart between trials. H.264 goes through the hardware decoder, the
+# same path as on-air video files. CRF 10 keeps the sensor noise (what
+# makes camera content hard to encode) - the app's own videos use 16.
+CLIP_H264_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "10",
+                  "-profile:v", "high", "-pix_fmt", "yuv420p", "-g", str(2 * tx.FPS)]
 
 
 def clip_path(width, height):
@@ -128,9 +138,8 @@ def derive_clip(width, height):
     result = subprocess.run(
         [FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
          "-ss", str(WARMUP_SECONDS), "-i", MASTER_PATH, "-t", str(DURATION_SECONDS),
-         "-vf", "scale={}:{},fps={}".format(width, height, tx.FPS),
-         "-c:v", "ffv1", "-c:a", "pcm_s16le",
-         out_path],
+         "-vf", "scale={}:{},fps={}".format(width, height, tx.FPS)]
+        + CLIP_H264_ARGS + ["-c:a", "pcm_s16le", out_path],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
     if result.returncode != 0:
         raise SystemExit("Deriving {}x{} failed:\n{}".format(width, height, result.stderr.strip()))

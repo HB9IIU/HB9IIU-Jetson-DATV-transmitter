@@ -117,3 +117,7 @@
        "ready, awaiting confirm" state, the third state between
        text-danger (not ready) and text-success (engaged). */
     .text-amber { color: var(--amber); }
+.nav-byline { font-size: 1.5rem; font-weight: 700; color: #8a98a6; white-space: nowrap; }
+/* Same top-bar font as the main web app's pages - app.css switches this
+   page's body to system-ui, which made the shared nav look different. */
+nav.navbar { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }

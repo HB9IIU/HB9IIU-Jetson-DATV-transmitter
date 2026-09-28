@@ -6,7 +6,7 @@
   <meta name="description" content="Web control panel for a Jetson Nano DATV transmitter">
   <title>Jetson DATV — Control Panel</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="{{ url_for('static', filename='css/datv.css') }}" rel="stylesheet">
+  <link href="{{ static_url('css/datv.css') }}" rel="stylesheet">
 </head>
 <body>
   <nav class="navbar navbar-expand-lg sticky-top">
@@ -18,32 +18,27 @@
           <li class="nav-item"><span class="nav-link active">Home</span></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('setup') }}">Setup</a></li>
           <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('help_page') }}">Help</a></li>
         </ul>
+        <span class="nav-byline ms-auto">By HB9IIU</span>
       </div>
     </div>
   </nav>
 
-  <main class="container-xxl py-4 py-lg-5">
-    <header class="mb-4">
-      <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-end gap-3">
-        <div>
-          <h1 class="h4 fw-bold mb-2">Get on air in three steps</h1>
-        </div>
-      </div>
-    </header>
+  <main class="container-xxl pb-4 pb-lg-5 main-top">
 
     <section class="row g-3 g-xl-4 justify-content-xl-between" aria-label="Transmission setup">
       <div class="col-12 col-xl-4">
-        <article class="surface step-card p-3 p-lg-4">
+        <article class="surface step-card p-3 p-lg-4" id="source-card">
           <div class="d-flex align-items-center gap-3 mb-4"><span class="step-number">1</span><h2 class="h4 mb-0">Select source</h2></div>
 
           <div class="source-choice source-choice-3 mb-4" role="group" aria-label="Source type">
             <input class="btn-check" type="radio" name="source-type" id="source-testcard" value="testcard" checked>
-            <label class="source-choice-btn" for="source-testcard"><span class="source-choice-icon">▦</span><span><strong>Testcard</strong><small>Still test image</small></span></label>
+            <label class="source-choice-btn" for="source-testcard"><span class="source-choice-icon">▦</span><strong>Testcard</strong></label>
             <input class="btn-check" type="radio" name="source-type" id="source-camera" value="camera">
-            <label class="source-choice-btn" for="source-camera"><span class="source-choice-icon">●</span><span><strong>Camera</strong><small>Live video source</small></span></label>
+            <label class="source-choice-btn" for="source-camera"><span class="source-choice-icon">●</span><strong>Camera</strong></label>
             <input class="btn-check" type="radio" name="source-type" id="source-video" value="video">
-            <label class="source-choice-btn" for="source-video"><span class="source-choice-icon">▶</span><span><strong>Video</strong><small>Prepared movie</small></span></label>
+            <label class="source-choice-btn" for="source-video"><span class="source-choice-icon">▶</span><strong>Video</strong></label>
           </div>
 
           <div id="camera-source-panel" class="d-none">
@@ -79,10 +74,13 @@
             </div>
 
             <div id="testcard-options">
-              <div class="text-center small fw-semibold mb-3" id="testcard-carousel-label">—</div>
               <select class="form-select mb-3 d-none" id="testcard-source" aria-label="Select testcard">
                 {% for testcard in testcards %}
+                {% if testcard.value == sbb_clock_testcard %}
+                <option value="{{ testcard.value }}" data-preview-url="{{ url_for('static', filename='img/sbb_clock_preview.png', v=testcard.version) }}">{{ testcard.label }}</option>
+                {% else %}
                 <option value="{{ testcard.value }}" data-preview-url="{{ url_for('testcard_preview', filename=testcard.value, v=testcard.version) }}">{{ testcard.label }}</option>
+                {% endif %}
                 {% else %}
                 <option value="">No testcards found</option>
                 {% endfor %}
@@ -110,7 +108,6 @@
             <div class="d-flex justify-content-between align-items-center px-3 pt-3 pb-2">
               <div>
                 <div class="fw-semibold">BATC wideband spectrum</div>
-                <div class="small text-muted-custom">QO-100 · live BATC FFT</div>
               </div>
               <span class="badge rounded-pill text-bg-secondary" id="batc-status">CONNECTING</span>
             </div>
@@ -120,31 +117,28 @@
           </div>
           <div class="row g-3 align-items-end">
             <div class="col-12 col-md-4">
-              <label class="form-label fw-semibold" for="frequency">Frequency</label>
-              <div class="input-group"><input class="form-control" id="frequency" value="" placeholder="Select a green slot" aria-label="Frequency" readonly><span class="input-group-text">MHz</span></div>
+              <div class="input-group"><label class="input-group-text fw-semibold" for="frequency" title="Frequency">Freq.</label><input class="form-control" id="frequency" value="" placeholder="Click a slot ↑" title="Click a green slot on the BATC spectrum above" aria-label="Frequency" readonly><span class="input-group-text">MHz</span></div>
             </div>
             <div class="col-12 col-md-4">
-              <label class="form-label fw-semibold" for="symbol-rate">Symbol rate</label>
-              <div class="input-group"><select class="form-select signal-select" id="symbol-rate" aria-label="Symbol rate"><option selected>333</option><option>500</option></select><span class="input-group-text">kS/s</span></div>
+              <div class="input-group"><label class="input-group-text fw-semibold" for="symbol-rate" title="Symbol rate">SR</label><select class="form-select signal-select" id="symbol-rate" aria-label="Symbol rate"><option selected>333</option><option>500</option></select><span class="input-group-text">kS/s</span></div>
             </div>
             <div class="col-12 col-md-4">
-              <label class="form-label fw-semibold" for="fec">FEC</label>
-              <select class="form-select signal-select" id="fec" aria-label="Forward error correction"><option>2/3</option><option selected>3/4</option></select>
+              <div class="input-group"><label class="input-group-text fw-semibold" for="fec" title="Forward error correction">FEC</label><select class="form-select signal-select" id="fec" aria-label="Forward error correction"><option>2/3</option><option selected>3/4</option></select></div>
             </div>
-          </div>
-          <div class="rounded-3 p-3 mt-4" style="background:#0a1721;border:1px solid #243d50">
-            <div class="small text-muted-custom mb-1">Signal summary</div>
-            <div class="fw-semibold" id="signal-summary">DVB-S2 · QPSK · Select a frequency · 333 kS/s · FEC 3/4</div>
           </div>
         </article>
       </div>
 
       <div class="col-12 col-xl-8">
         <article class="surface step-card p-3 p-lg-4">
-          <div class="d-flex align-items-center gap-3 mb-4">
+          <div class="d-flex flex-wrap align-items-center gap-3 mb-4">
             <span class="step-number">3</span><h2 class="h4 mb-0">Go live</h2>
-            <span class="small fw-semibold text-secondary ms-auto" id="pa-relay-status" title="PA relay: powers the CN0417 pre-amp only once the local Pluto RX spectrum shows a stable, locked signal">
-              <span class="telemetry-dot me-2"></span>PA relay: idle
+            <div class="rounded-3 py-2 px-3" style="background:#0a1721;border:1px solid #243d50">
+              <div class="small text-muted-custom">Signal summary</div>
+              <div class="fw-semibold" id="signal-summary">DVB-S2 · QPSK · Select a frequency · 333 kS/s · FEC 3/4</div>
+            </div>
+            <span class="small fw-semibold text-nowrap text-secondary ms-auto" id="pa-relay-status" title="PA relay: powers the CN0417 pre-amp only once the local Pluto RX spectrum shows a stable, locked signal">
+              <span class="telemetry-dot me-2"></span>PA: idle
             </span>
           </div>
 
@@ -154,10 +148,6 @@
 
           <div class="row g-2">
             <div class="col-12"><button class="btn btn-success btn-lg fw-bold w-100" id="stream-toggle" type="button">▶ Start stream</button></div>
-            <div class="col-12">
-              <button class="btn btn-warning btn-lg fw-bold w-100 d-none" id="pa-relay-engage-button" type="button">⚡ Engage PA relay</button>
-              <button class="btn btn-outline-danger btn-lg fw-bold w-100 d-none" id="pa-relay-disengage-button" type="button">Power down PA relay</button>
-            </div>
           </div>
 
           <div class="d-flex justify-content-end mt-2">
@@ -185,6 +175,14 @@
               <span id="local-fft-freq-right">--</span>
             </div>
           </div>
+          <!-- PA relay buttons live next to the RX spectrum they depend on
+               (engaging needs a stable, locked signal shown here). The
+               min-height reserves the button's space even while hidden, so
+               this card - and card 3 next to it - never jumps in height. -->
+          <div class="text-center mt-3" style="min-height: 3rem;">
+            <button class="btn btn-warning btn-lg fw-bold px-4 d-none" id="pa-relay-engage-button" type="button">⚡ Engage PA relay</button>
+            <button class="btn btn-outline-danger btn-lg fw-bold px-4 d-none" id="pa-relay-disengage-button" type="button">Power down PA relay</button>
+          </div>
         </article>
       </div>
     </section>
@@ -205,10 +203,9 @@
     </section>
   </main>
 
-  <footer class="container-xxl pb-4 small text-center">JETSON DATV · Testcard → Pluto TX is live · Camera and video sources not yet connected</footer>
-  <script src="{{ url_for('static', filename='js/app-alert.js') }}" defer></script>
-  <script src="{{ url_for('static', filename='js/datv.js') }}" defer></script>
-  <script src="{{ url_for('static', filename='js/batc-spectrum.js') }}" defer></script>
+  <script src="{{ static_url('js/app-alert.js') }}" defer></script>
+  <script src="{{ static_url('js/datv.js') }}" defer></script>
+  <script src="{{ static_url('js/batc-spectrum.js') }}" defer></script>
 </body>
 </html>
 
