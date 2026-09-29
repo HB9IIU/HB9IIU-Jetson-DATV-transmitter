@@ -18,9 +18,11 @@ from camera_preview import stop_active_preview, stream_camera
 from datv_engine import SBB_CLOCK_TESTCARD, DatvEngine
 from dvbs2_profiles import VIDEO_PROFILE_NAMES, PROFILES
 from pluto_fft_bridge import get_latest_frame, start_background_reader
+import opentuner_quicktune
 import overlay_settings
 import pa_relay
 import pluto_callsign
+import rx_relay
 import usb_video_key
 
 # The web GUI polls /api/stream/status and /api/telemetry every 1-2s, which
@@ -266,6 +268,7 @@ _start_pluto_telemetry()
 start_background_reader()
 usb_video_key.init(PROJECT_DIR)
 overlay_settings.init(PROJECT_DIR)
+opentuner_quicktune.init(PROJECT_DIR)
 # PA-relay safety interlock - see pa_relay.py's own docstring for the full
 # story. Getter callables rather than a direct import keep pa_relay.py from
 # ever importing this module back (one-directional dependency).
@@ -494,6 +497,50 @@ def setup():
     return render_template("setup.html")
 
 
+@app.route("/rx")
+def rx_page():
+    return render_template("rx.html")
+
+
+@app.route("/rx/stream.mp4")
+def rx_stream():
+    """RX page's player - OpenTuner's Jetson stream, relayed as-is (see
+    rx_relay.py). 503 while no station is being received; the response
+    ends when the station changes, and the page reconnects."""
+    chunks = rx_relay.stream()
+    if chunks is None:
+        return jsonify({"error": "No stream from OpenTuner"}), 503
+    return Response(chunks, mimetype="video/mp4", headers={"Cache-Control": "no-store"})
+
+
+@app.route("/api/rx/status")
+def rx_status():
+    return jsonify(rx_relay.status())
+
+
+# Latest tuner 1 status pushed by the modified OpenTuner once per second
+# (the values of its Properties panel) - shown on the RX page.
+RX_INFO = {"data": None, "received": 0.0}
+
+
+@app.route("/api/rx/info", methods=["POST"])
+def rx_info_post():
+    """OpenTuner waits at most 1 s for this, so: store and answer at once."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Expected a JSON object"}), 400
+    RX_INFO["data"] = data
+    RX_INFO["received"] = time.time()
+    return "", 204
+
+
+@app.route("/api/rx/info")
+def rx_info_get():
+    if RX_INFO["data"] is None:
+        return jsonify({"age_s": None})
+    return jsonify(dict(RX_INFO["data"], age_s=round(time.time() - RX_INFO["received"], 1)))
+
+
 @app.route("/help")
 def help_page():
     return render_template("help.html")
@@ -543,6 +590,73 @@ def overlay_settings_post():
         data.get("marquee_text", ""),
     )
     return jsonify(saved)
+
+
+@app.route("/api/opentuner-settings")
+def opentuner_settings_get():
+    """client_ip is the browser's own address - the Setup page's "Use this
+    PC" button, for when the PC running OpenTuner is the one browsing."""
+    settings = opentuner_quicktune.load()
+    settings["client_ip"] = request.remote_addr
+    return jsonify(settings)
+
+
+@app.route("/api/opentuner-settings", methods=["POST"])
+def opentuner_settings_post():
+    data = request.get_json(silent=True) or {}
+    try:
+        saved = opentuner_quicktune.save(
+            data.get("enabled", False),
+            data.get("target_ip", ""),
+            data.get("port", opentuner_quicktune.DEFAULTS["port"]),
+            data.get("lnb_offset_khz", opentuner_quicktune.DEFAULTS["lnb_offset_khz"]),
+        )
+    except (ValueError, TypeError, OSError) as exc:
+        return jsonify({"error": "Invalid setting: {}".format(exc)}), 400
+    return jsonify(saved)
+
+
+@app.route("/api/opentuner/test", methods=["POST"])
+def opentuner_test():
+    """Setup page's "Send test tune" - tunes to the QO-100 beacon, so it
+    works without transmitting and OpenTuner should visibly lock."""
+    try:
+        message, destination = opentuner_quicktune.send_beacon()
+    except OSError as exc:
+        return jsonify({"error": "Send failed: {}".format(exc)}), 503
+    return jsonify({"message": message, "destination": "{}:{}".format(*destination)})
+
+
+@app.route("/api/opentuner/tune", methods=["POST"])
+def opentuner_tune():
+    """RX page's click-to-tune - a downlink frequency picked straight off the
+    BATC spectrum, so no uplink conversion. Works whether or not the Setup
+    page's auto-tune-on-stream-start switch is on."""
+    data = request.get_json(silent=True) or {}
+    try:
+        downlink_khz = int(data.get("downlink_khz"))
+        symbol_rate = int(data.get("symbol_rate"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "downlink_khz and symbol_rate must be numbers"}), 400
+    if not 10489000 <= downlink_khz <= 10500000 or not 25 <= symbol_rate <= 4000:
+        return jsonify({"error": "Outside the QO-100 wideband transponder"}), 400
+    try:
+        message, destination = opentuner_quicktune.send_downlink(downlink_khz, symbol_rate)
+    except OSError as exc:
+        return jsonify({"error": "Send failed: {}".format(exc)}), 503
+    return jsonify({"message": message, "destination": "{}:{}".format(*destination)})
+
+
+def _tune_opentuner(frequency_hz, symbol_rate):
+    """Best effort - a failed tune message must never block a stream start."""
+    settings = opentuner_quicktune.load()
+    if not settings["enabled"]:
+        return
+    try:
+        message, destination = opentuner_quicktune.send_tune(frequency_hz, symbol_rate, settings)
+        app.logger.info("OpenTuner Quick Tune -> %s:%s %s", destination[0], destination[1], message)
+    except OSError as exc:
+        app.logger.warning("OpenTuner Quick Tune send failed: %s", exc)
 
 
 @app.route("/api/stream/status")
@@ -636,6 +750,7 @@ def stream_start():
     global CURRENT_SYMBOL_RATE_KSPS
     CURRENT_SYMBOL_RATE_KSPS = symbol_rate
     set_pluto_rx_fft(True, frequency_hz)
+    _tune_opentuner(frequency_hz, symbol_rate)
     return jsonify(status_data), 202
 
 
@@ -852,6 +967,12 @@ if __name__ == "__main__":
     # debugger reachable, which is a real risk to run with root privileges
     # even on a LAN-only device. See `sudo setcap 'cap_net_bind_service=+ep'
     # $(readlink -f $(which python3))`.
+    #
+    # debug=True runs this script twice: a watcher process that only
+    # restarts the real one on code changes, and the real one (with
+    # WERKZEUG_RUN_MAIN set). Only the real one may own the RX TCP port.
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        rx_relay.start()
     app.run(host="0.0.0.0", port=80, debug=True, threaded=True)
 
 

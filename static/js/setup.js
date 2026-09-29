@@ -314,6 +314,92 @@ callsignRebootClose?.addEventListener('click', () => {
 loadCallsign();
 
 /**
+ * OpenTuner auto-tune - see opentuner_quicktune.py. Blank IP = broadcast to
+ * the whole LAN; "Use this PC" fills in the browser's own address as the
+ * Jetson sees it (client_ip from /api/opentuner-settings).
+ */
+const opentunerEnabled = document.querySelector('#opentuner-enabled');
+const opentunerIp = document.querySelector('#opentuner-ip');
+const opentunerThisPcButton = document.querySelector('#opentuner-this-pc-button');
+const opentunerPort = document.querySelector('#opentuner-port');
+const opentunerOffset = document.querySelector('#opentuner-offset');
+const opentunerSaveButton = document.querySelector('#opentuner-save-button');
+const opentunerTestButton = document.querySelector('#opentuner-test-button');
+const opentunerMessage = document.querySelector('#opentuner-message');
+let opentunerClientIp = '';
+
+function setOpentunerMessage(text, isError) {
+  opentunerMessage.textContent = text;
+  opentunerMessage.classList.toggle('text-danger', Boolean(isError));
+}
+
+async function loadOpentunerSettings() {
+  if (!opentunerSaveButton) return;
+  try {
+    const response = await fetch('/api/opentuner-settings', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Request failed');
+    const settings = await response.json();
+    opentunerEnabled.checked = settings.enabled;
+    opentunerIp.value = settings.target_ip;
+    opentunerPort.value = settings.port;
+    opentunerOffset.value = settings.lnb_offset_khz;
+    opentunerClientIp = settings.client_ip || '';
+  } catch (error) {
+    console.error('loadOpentunerSettings failed:', error);
+    setOpentunerMessage('Could not load OpenTuner settings.', true);
+  }
+}
+
+async function saveOpentunerSettings() {
+  const response = await fetch('/api/opentuner-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      enabled: opentunerEnabled.checked,
+      target_ip: opentunerIp.value.trim(),
+      port: opentunerPort.value,
+      lnb_offset_khz: opentunerOffset.value,
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || 'Request failed');
+}
+
+opentunerThisPcButton?.addEventListener('click', () => {
+  if (opentunerClientIp) opentunerIp.value = opentunerClientIp;
+});
+
+opentunerSaveButton?.addEventListener('click', async () => {
+  opentunerSaveButton.disabled = true;
+  try {
+    await saveOpentunerSettings();
+    setOpentunerMessage('Saved - used on the next stream start.', false);
+  } catch (error) {
+    setOpentunerMessage('Could not save: ' + error.message, true);
+  } finally {
+    opentunerSaveButton.disabled = false;
+  }
+});
+
+// Saves first so the test uses exactly what's on screen.
+opentunerTestButton?.addEventListener('click', async () => {
+  opentunerTestButton.disabled = true;
+  try {
+    await saveOpentunerSettings();
+    const response = await fetch('/api/opentuner/test', { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Request failed');
+    setOpentunerMessage('Sent to ' + result.destination + ': ' + result.message, false);
+  } catch (error) {
+    setOpentunerMessage('Test failed: ' + error.message, true);
+  } finally {
+    opentunerTestButton.disabled = false;
+  }
+});
+
+loadOpentunerSettings();
+
+/**
  * Restart app - see app.py's app_restart(). The server exits ~1s after
  * answering and systemd starts it again ~3s later, so first wait for it to
  * go away (otherwise the old process could answer the poll), then for it

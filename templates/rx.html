@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="QO-100 receive page for the Jetson Nano DATV transmitter">
+  <title>Jetson DATV — RX</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="{{ static_url('css/datv.css') }}" rel="stylesheet">
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg sticky-top">
+    <div class="container-xxl py-2">
+      <a class="navbar-brand fs-4" href="{{ url_for('index') }}" aria-label="Jetson DATV home">JETSON <span class="text-primary">DATV</span></a>
+      <button class="navbar-toggler" type="button" disabled aria-label="Navigation"><span class="navbar-toggler-icon"></span></button>
+      <div class="collapse navbar-collapse">
+        <ul class="navbar-nav ms-5 gap-lg-3">
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('index') }}">Home</a></li>
+          <li class="nav-item"><span class="nav-link active">RX</span></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('setup') }}">Setup</a></li>
+          <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('help_page') }}">Help</a></li>
+        </ul>
+        <span class="nav-byline ms-auto">By HB9IIU</span>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container-xxl pb-4 pb-lg-5 main-top-half">
+    <section class="row g-3 g-xl-4">
+      <div class="col-12">
+        <article class="surface step-card p-3 p-lg-4">
+          <div class="batc-panel">
+            <div class="d-flex justify-content-between align-items-center px-3 pt-3 pb-2">
+              <div class="fw-semibold">BATC wideband spectrum</div>
+              <div class="fw-semibold" id="rx-tuned">Not tuned yet - click a signal below.</div>
+              <span class="badge rounded-pill text-bg-secondary" id="batc-status">CONNECTING</span>
+            </div>
+            <div class="batc-spectrum" aria-label="Live BATC QO-100 wideband spectrum - click a signal to tune">
+              <canvas id="rx-spectrum-canvas" style="cursor: crosshair;"></canvas>
+            </div>
+          </div>
+          <div class="small text-muted-custom mt-2 d-none" id="rx-message"></div>
+        </article>
+      </div>
+
+      <div class="col-12 col-xl-8">
+        <article class="surface step-card p-3 p-lg-4">
+          <div class="small text-danger mb-3 d-none" id="rx-player-status"></div>
+          <div class="position-relative">
+            <video id="rx-video" class="w-100 rounded-3 d-block" style="background: #000; aspect-ratio: 16 / 9;" controls playsinline></video>
+            <!-- Last frame, frozen while OpenTuner retunes (see rx-player.js). -->
+            <canvas id="rx-freeze" class="position-absolute top-0 start-0 w-100 h-100 rounded-3 d-none" style="object-fit: contain; background: #000; pointer-events: none;"></canvas>
+            <div id="rx-overlay" class="position-absolute top-50 start-50 translate-middle px-4 py-2 rounded-3 fw-bold fs-4 d-none" style="background: rgba(0,0,0,0.65); pointer-events: none;"></div>
+          </div>        </article>
+      </div>
+
+      <div class="col-12 col-xl-4">
+        <article class="surface step-card p-3 p-lg-4 h-100">
+          <div class="d-flex gap-4 align-items-center mb-2">
+            <div><div class="telemetry-label">Margin</div><div class="telemetry-value" id="rx-info-margin">--</div></div>
+            <div><div class="telemetry-label">MER</div><div class="telemetry-value" id="rx-info-mer">--</div></div>
+            <span class="badge rounded-pill text-bg-secondary ms-auto" id="rx-info-lock">NO DATA</span>
+          </div>
+          <!-- Quality bar: D margin 0-10 dB, coloured like the margin figure. -->
+          <div class="progress mb-3" role="progressbar" aria-label="Signal quality (D margin)" style="height: 8px; background: #0a1721;">
+            <div class="progress-bar" id="rx-info-quality" style="width: 0%;"></div>
+          </div>
+          <table class="table table-sm table-borderless small mb-0" style="--bs-table-bg: transparent;">
+            <tbody id="rx-info-rows"></tbody>
+          </table>
+          <div class="small text-muted-custom mt-2" id="rx-info-age"></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="container-xxl pb-4 small text-center">JETSON DATV · RX</footer>
+  <script src="{{ static_url('js/app-alert.js') }}" defer></script>
+  <script src="{{ static_url('js/rx-spectrum.js') }}" defer></script>
+  <script src="{{ static_url('js/rx-player.js') }}" defer></script>
+  <script src="{{ static_url('js/rx-info.js') }}" defer></script>
+</body>
+</html>

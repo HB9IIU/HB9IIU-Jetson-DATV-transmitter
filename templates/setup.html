@@ -16,6 +16,7 @@
       <div class="collapse navbar-collapse">
         <ul class="navbar-nav ms-5 gap-lg-3">
           <li class="nav-item"><a class="nav-link" href="{{ url_for('index') }}">Home</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('rx_page') }}">RX</a></li>
           <li class="nav-item"><span class="nav-link active">Setup</span></li>
           <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('help_page') }}">Help</a></li>
@@ -79,6 +80,42 @@
 
           <button class="btn btn-success" id="overlay-save-button" type="button">Save</button>
           <span class="small text-muted-custom ms-2" id="overlay-save-message"></span>
+        </article>
+      </div>
+    </section>
+
+    <header class="mt-5 mb-4">
+      <div class="eyebrow mb-2">OPENTUNER</div>
+      <h1 class="display-6 fw-bold mb-2">Auto-tune OpenTuner to my signal</h1>
+      <p class="text-muted-custom mb-0">On every stream start, tells OpenTuner (Quick Tune Control ticked) to tune to our QO-100 downlink and symbol rate.</p>
+    </header>
+
+    <section class="row g-3 g-xl-4">
+      <div class="col-12">
+        <article class="surface step-card p-3 p-lg-4">
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="opentuner-enabled">
+            <label class="form-check-label" for="opentuner-enabled">Auto-tune on stream start</label>
+          </div>
+          <label class="form-label fw-semibold" for="opentuner-ip">PC running OpenTuner</label>
+          <div class="d-flex gap-2 flex-wrap align-items-start mb-1">
+            <input type="text" class="form-control" id="opentuner-ip" style="max-width: 220px" placeholder="blank = whole network">
+            <button class="btn btn-outline-secondary" id="opentuner-this-pc-button" type="button">Use this PC</button>
+          </div>
+          <p class="small text-muted-custom mb-3">Leave blank to send to every PC on the network.</p>
+          <div class="d-flex gap-3 flex-wrap mb-3">
+            <div>
+              <label class="form-label fw-semibold" for="opentuner-port">UDP port (tuner 1)</label>
+              <input type="number" class="form-control" id="opentuner-port" style="max-width: 140px">
+            </div>
+            <div>
+              <label class="form-label fw-semibold" for="opentuner-offset">LNB offset (kHz)</label>
+              <input type="number" class="form-control" id="opentuner-offset" style="max-width: 180px">
+            </div>
+          </div>
+          <button class="btn btn-success" id="opentuner-save-button" type="button">Save</button>
+          <button class="btn btn-outline-secondary ms-2" id="opentuner-test-button" type="button">Test: tune to beacon</button>
+          <span class="small text-muted-custom d-block mt-2" id="opentuner-message"></span>
         </article>
       </div>
     </section>

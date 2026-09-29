@@ -66,6 +66,9 @@
     /* Home page top gap: 25% less than Bootstrap's py-4 / py-lg-5 (1.5 / 3 rem). */
     .main-top { padding-top: 1.125rem; }
     @media (min-width: 992px) { .main-top { padding-top: 2.25rem; } }
+    /* RX page: half of .main-top. */
+    .main-top-half { padding-top: .5625rem; }
+    @media (min-width: 992px) { .main-top-half { padding-top: 1.125rem; } }
     /* Card 1 while on air: only the source buttons (see setSourceControlsDisabled()). */
     .source-collapsed #camera-source-panel, .source-collapsed #file-source-panel { display: none !important; }
     .source-collapsed .source-choice { margin-bottom: 0 !important; }
