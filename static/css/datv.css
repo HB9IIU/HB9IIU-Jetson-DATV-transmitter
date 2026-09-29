@@ -72,6 +72,8 @@
     /* Card 1 while on air: only the source buttons (see setSourceControlsDisabled()). */
     .source-collapsed #camera-source-panel, .source-collapsed #file-source-panel { display: none !important; }
     .source-collapsed .source-choice { margin-bottom: 0 !important; }
+    /* On-air monitor (datv.js) replaces the source buttons entirely. */
+    .monitor-active .source-choice, .monitor-active #camera-source-panel, .monitor-active #file-source-panel { display: none !important; }
     .source-choice { display: grid; grid-template-columns: 1fr 1fr; gap: .65rem; }
     .source-choice-3 { grid-template-columns: 1fr 1fr 1fr; }
     .source-choice-btn { min-height: 2.5rem; min-width: 0; display: flex; align-items: center; gap: .6rem; padding: .3rem .7rem; border: 1px solid #3a5265; border-radius: .75rem; color: var(--muted); background: #0b1823; cursor: pointer; transition: border-color .15s ease, background-color .15s ease, color .15s ease; }

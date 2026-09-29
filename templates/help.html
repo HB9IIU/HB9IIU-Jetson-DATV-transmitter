@@ -106,9 +106,27 @@
       <ul class="help-list mb-0">
         <li><strong>Callsign</strong> — your callsign, shown in the picture and sent to the Pluto. Changing it restarts the Pluto.</li>
         <li><strong>Top/bottom banner &amp; marquee</strong> — the title bar, the bottom bar (callsign, clock, frequency) and the scrolling text shown with Camera and Video.</li>
+        <li><strong>OpenTuner</strong> — lets the Jetson tune OpenTuner to your own signal every time you start a stream (see below).</li>
         <li><strong>Add prepared videos via USB</strong> — choose which USB stick holds your videos.</li>
         <li><strong>Restart app</strong> — if something is stuck. Never while a video is being prepared.</li>
       </ul>
+    </article>
+
+    <article class="surface p-3 p-lg-4 mb-4">
+      <h2 class="h5 fw-bold mb-3">📺 Receiving with OpenTuner (optional)</h2>
+      <p>With a <strong>MiniTiouner</strong> receiver and a <strong>modified version of OpenTuner</strong> on a Windows PC, you can watch QO-100 right here in the browser:</p>
+      <ul class="help-list">
+        <li>The <a href="{{ url_for('rx_page') }}">RX</a> page: <strong>click a signal</strong> on the spectrum and OpenTuner tunes to it. The picture and the receiver values (margin, MER, modcod, …) appear below.</li>
+        <li>On the home page, card 1 becomes an <strong>On-air monitor</strong> while you transmit: your own signal, as it comes back from the satellite.</li>
+      </ul>
+      <p class="fw-semibold mb-2">Setting it up</p>
+      <ol class="help-list">
+        <li>Download the modified OpenTuner: <a href="https://github.com/HB9IIU/HB9IIU-Jetson-DATV-OpenTuner" target="_blank" rel="noopener">github.com/HB9IIU/HB9IIU-Jetson-DATV-OpenTuner</a>. The PC and the Jetson must be on the same network.</li>
+        <li>In OpenTuner, under <strong>Extra Features</strong>, tick <strong>Quick Tune Control</strong> (lets the Jetson tune it).</li>
+        <li>Tick <strong>Jetson Stream</strong> and open its settings: enter the Jetson's <strong>IP address</strong> and port <strong>5001</strong>.</li>
+        <li>On the <a href="{{ url_for('setup') }}">Setup</a> page, section <strong>OpenTuner</strong>: switch on <strong>Auto-tune on stream start</strong>, check that the <strong>LNB offset</strong> matches OpenTuner's (usually 9750000), press <strong>Save</strong>, then <strong>Test: tune to beacon</strong>. OpenTuner should jump to the beacon.</li>
+      </ol>
+      <div class="help-tip">💡 The RX page always starts on the beacon, and <strong>muted</strong> — click the speaker icon on the picture for sound. When you change station, the last picture stays frozen with <strong>“Retuning…”</strong> until the new one is there.</div>
     </article>
 
     <article class="surface p-3 p-lg-4 mb-4">
@@ -126,6 +144,10 @@
         <dd>First try another receiver program or player. The Jetson sends a steady stream.</dd>
         <dt>My video is not in the list</dt>
         <dd>It is still being prepared (see the Video Library), or the USB stick is not plugged in.</dd>
+        <dt>The RX page or the On-air monitor says “No signal”</dt>
+        <dd>OpenTuner must be running with its tuner locked, and <strong>Jetson Stream</strong> must be ticked with the Jetson's correct IP address.</dd>
+        <dt>OpenTuner does not react when I click a signal</dt>
+        <dd>Tick <strong>Quick Tune Control</strong> in OpenTuner. If it still doesn't react, enter the PC's IP address on the Setup page (button <strong>Use this PC</strong>) instead of leaving it blank.</dd>
         <dt>A page looks wrong after an update</dt>
         <dd>Reload the page (F5).</dd>
       </dl>

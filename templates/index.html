@@ -31,7 +31,27 @@
     <section class="row g-3 g-xl-4 justify-content-xl-between" aria-label="Transmission setup">
       <div class="col-12 col-xl-4">
         <article class="surface step-card p-3 p-lg-4" id="source-card">
-          <div class="d-flex align-items-center gap-3 mb-4"><span class="step-number">1</span><h2 class="h4 mb-0">Select source</h2></div>
+          <div class="d-flex align-items-center gap-3 mb-4"><span class="step-number" id="source-card-step">1</span><h2 class="h4 mb-0" id="source-card-title">Select source</h2></div>
+
+          <!-- On-air monitor: replaces the source controls while transmitting
+               - our own signal as received back via OpenTuner (see datv.js).
+               Sized to fit the card's existing height. -->
+          <div id="tx-monitor" class="d-none">
+            <div class="position-relative mb-3">
+              <video id="tx-monitor-video" class="w-100 rounded-3 d-block" style="background: #000; aspect-ratio: 16 / 9;" controls playsinline></video>
+              <canvas id="tx-monitor-freeze" class="position-absolute top-0 start-0 w-100 h-100 rounded-3 d-none" style="object-fit: contain; background: #000; pointer-events: none;"></canvas>
+              <div id="tx-monitor-overlay" class="position-absolute top-50 start-50 translate-middle px-3 py-1 rounded-3 fw-bold d-none" style="background: rgba(0,0,0,0.65); pointer-events: none;"></div>
+            </div>
+            <div class="d-flex gap-4 align-items-center mb-2">
+              <div><div class="telemetry-label">Margin</div><div class="telemetry-value" id="tx-monitor-margin">--</div></div>
+              <div><div class="telemetry-label">MER</div><div class="telemetry-value" id="tx-monitor-mer">--</div></div>
+              <span class="badge rounded-pill text-bg-secondary ms-auto" id="tx-monitor-lock">NO DATA</span>
+            </div>
+            <div class="progress mb-2" role="progressbar" aria-label="Signal quality (D margin)" style="height: 8px; background: #0a1721;">
+              <div class="progress-bar" id="tx-monitor-quality" style="width: 0%;"></div>
+            </div>
+            <div class="small text-muted-custom text-truncate" id="tx-monitor-summary"></div>
+          </div>
 
           <div class="source-choice source-choice-3 mb-4" role="group" aria-label="Source type">
             <input class="btn-check" type="radio" name="source-type" id="source-testcard" value="testcard" checked>
@@ -205,6 +225,8 @@
   </main>
 
   <script src="{{ static_url('js/app-alert.js') }}" defer></script>
+  <script src="{{ static_url('js/rx-player.js') }}" defer></script>
+  <script src="{{ static_url('js/rx-info.js') }}" defer></script>
   <script src="{{ static_url('js/datv.js') }}" defer></script>
   <script src="{{ static_url('js/batc-spectrum.js') }}" defer></script>
 </body>

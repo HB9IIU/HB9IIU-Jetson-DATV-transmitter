@@ -493,10 +493,63 @@ function setSourceControlsDisabled(disabled) {
   });
 }
 
+/**
+ * On-air monitor: while transmitting, card 1 shows our own signal as
+ * received back from the satellite - OpenTuner (auto-tuned to our downlink
+ * on stream start, see the Setup page) pushes it to the Jetson, same player
+ * and status feed as the RX page (rx-player.js / rx-info.js).
+ * Test without going on air: open the Home page with ?monitor=test - the
+ * monitor shows while stopped and OpenTuner is tuned to the beacon.
+ */
+const MONITOR_TEST = new URLSearchParams(window.location.search).get('monitor') === 'test';
+const sourceCard = document.querySelector('#source-card');
+const sourceCardTitle = document.querySelector('#source-card-title');
+const txMonitor = document.querySelector('#tx-monitor');
+const txMonitorPlayer = txMonitor && window.createRxPlayer ? window.createRxPlayer({
+  video: document.querySelector('#tx-monitor-video'),
+  freezeCanvas: document.querySelector('#tx-monitor-freeze'),
+  overlay: document.querySelector('#tx-monitor-overlay'),
+}) : null;
+const txMonitorInfo = txMonitor && window.createRxInfo ? window.createRxInfo({
+  lockBadge: document.querySelector('#tx-monitor-lock'),
+  marginValue: document.querySelector('#tx-monitor-margin'),
+  merValue: document.querySelector('#tx-monitor-mer'),
+  qualityBar: document.querySelector('#tx-monitor-quality'),
+  summary: document.querySelector('#tx-monitor-summary'),
+}) : null;
+let txMonitorShown = false;
+
+function setTxMonitor(show) {
+  if (!txMonitorPlayer || show === txMonitorShown) return;
+  txMonitorShown = show;
+  sourceCard.classList.toggle('monitor-active', show);
+  txMonitor.classList.toggle('d-none', !show);
+  sourceCardTitle.textContent = show ? 'On-air monitor' : 'Select source';
+  // "1" = step 1 (choose a source) - meaningless for the monitor.
+  document.querySelector('#source-card-step')?.classList.toggle('d-none', show);
+  if (show) {
+    txMonitorPlayer.start();
+    txMonitorInfo.start();
+  } else {
+    txMonitorPlayer.stop();
+    txMonitorInfo.stop();
+  }
+}
+
+if (MONITOR_TEST) {
+  fetch('/api/opentuner/tune', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ downlink_khz: 10491500, symbol_rate: 1500 }),
+  }).catch(() => {});
+  setTxMonitor(true);
+}
+
 function renderStreamButton(status) {
   if (!streamToggle) return;
   const previousStreamState = streamState;
   streamState = status.state;
+  setTxMonitor(status.state === 'streaming' || MONITOR_TEST);
   // Source can only be changed while fully stopped - switching source mid-
   // stream would need a pipeline restart (a brief RF dropout while the
   // receiver re-acquires lock), so we require an explicit Stop first

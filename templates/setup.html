@@ -112,7 +112,25 @@
               <label class="form-label fw-semibold" for="opentuner-offset">LNB offset (kHz)</label>
               <input type="number" class="form-control" id="opentuner-offset" style="max-width: 180px">
             </div>
+            <div>
+              <label class="form-label fw-semibold" for="opentuner-rx-correction">LNB frequency correction (kHz)</label>
+              <input type="number" class="form-control" id="opentuner-rx-correction" style="max-width: 180px">
+            </div>
           </div>
+          <p class="small text-muted-custom mb-2">Your receive chain's frequency error (mostly the LNB), added to every satellite tune.</p>
+          <div class="form-check form-switch mb-1">
+            <input class="form-check-input" type="checkbox" role="switch" id="opentuner-auto-calibrate">
+            <label class="form-check-label" for="opentuner-auto-calibrate">Auto-calibrate on the beacon</label>
+          </div>
+          <p class="small text-muted-custom mb-3">Whenever OpenTuner is locked on the beacon (e.g. the RX page, which opens on it), the correction is measured and updated by itself - it also follows the LNB drifting with temperature. Switch off to set it by hand.</p>
+          <div class="form-check form-switch mb-1">
+            <input class="form-check-input" type="checkbox" role="switch" id="opentuner-local-test">
+            <label class="form-check-label" for="opentuner-local-test">Local test: receive the uplink directly (no satellite)</label>
+          </div>
+          <p class="small text-muted-custom mb-2">OpenTuner is tuned to your 2.4 GHz TX frequency itself, so the MiniTiouner picks up the Pluto directly. Keep TX power low. Switch off for normal QO-100 use.</p>
+          <label class="form-label fw-semibold" for="opentuner-local-correction">Local test frequency correction (kHz)</label>
+          <input type="number" class="form-control mb-1" id="opentuner-local-correction" style="max-width: 180px">
+          <p class="small text-muted-custom mb-3">Set it to OpenTuner's "Freq Carrier Offset" (in kHz, e.g. -182) so the MiniTiouner sits right on the Pluto's signal.</p>
           <button class="btn btn-success" id="opentuner-save-button" type="button">Save</button>
           <button class="btn btn-outline-secondary ms-2" id="opentuner-test-button" type="button">Test: tune to beacon</button>
           <span class="small text-muted-custom d-block mt-2" id="opentuner-message"></span>

@@ -522,6 +522,46 @@ def rx_status():
 # (the values of its Properties panel) - shown on the RX page.
 RX_INFO = {"data": None, "received": 0.0}
 
+# Auto-calibration of the LNB frequency correction on the beacon (exactly
+# 10491.500 MHz, 1500 kS/s). The correction is computed absolutely - where
+# the beacon really is (requested + carrier offset) minus where it should
+# be - so it never depends on its own previous value and can't run away,
+# and no retune is needed.
+BEACON_KHZ = opentuner_quicktune.QO100_BEACON_DOWNLINK_KHZ
+CALIBRATION_WINDOW_S = 10
+CALIBRATION_MIN_SAMPLES = 8
+CALIBRATION = {"requested": None, "samples": [], "since": 0.0, "last": 0.0}
+
+
+def _auto_calibrate(data):
+    settings = opentuner_quicktune.load()
+    requested = data.get("requested_freq_khz")
+    offset_hz = data.get("carrier_offset_hz")
+    symbol_rate = data.get("symbol_rate_ksps")
+    now = time.time()
+    on_beacon = (settings["auto_calibrate"] and not settings["local_test"] and data.get("locked")
+                 and isinstance(requested, (int, float)) and isinstance(offset_hz, (int, float))
+                 and isinstance(symbol_rate, (int, float)) and 1400 <= symbol_rate <= 1600
+                 and abs(requested - BEACON_KHZ) <= 300)
+    # Start over on anything that breaks a clean run: off the beacon, a new
+    # tune, or a gap in OpenTuner's once-per-second updates.
+    if not on_beacon or requested != CALIBRATION["requested"] or now - CALIBRATION["last"] > 3:
+        CALIBRATION.update(requested=requested if on_beacon else None, samples=[], since=now)
+    CALIBRATION["last"] = now
+    if not on_beacon:
+        return
+    CALIBRATION["samples"].append(offset_hz)
+    if (now - CALIBRATION["since"] < CALIBRATION_WINDOW_S
+            or len(CALIBRATION["samples"]) < CALIBRATION_MIN_SAMPLES):
+        return
+    average_khz = sum(CALIBRATION["samples"]) / len(CALIBRATION["samples"]) / 1000.0
+    CALIBRATION.update(samples=[], since=now)
+    correction = int(round(requested - BEACON_KHZ + average_khz))
+    if abs(correction - settings["rx_correction_khz"]) >= 1:
+        opentuner_quicktune.set_rx_correction(correction)
+        app.logger.info("Beacon auto-calibration: LNB correction %+d -> %+d kHz",
+                        settings["rx_correction_khz"], correction)
+
 
 @app.route("/api/rx/info", methods=["POST"])
 def rx_info_post():
@@ -531,6 +571,10 @@ def rx_info_post():
         return jsonify({"error": "Expected a JSON object"}), 400
     RX_INFO["data"] = data
     RX_INFO["received"] = time.time()
+    try:
+        _auto_calibrate(data)
+    except (ValueError, TypeError, OSError) as exc:
+        app.logger.warning("Beacon auto-calibration skipped: %s", exc)
     return "", 204
 
 
@@ -538,7 +582,13 @@ def rx_info_post():
 def rx_info_get():
     if RX_INFO["data"] is None:
         return jsonify({"age_s": None})
-    return jsonify(dict(RX_INFO["data"], age_s=round(time.time() - RX_INFO["received"], 1)))
+    info = dict(RX_INFO["data"], age_s=round(time.time() - RX_INFO["received"], 1))
+    # OpenTuner reports what it was asked to tune to, which includes our LNB
+    # frequency correction - show the station's real frequency instead.
+    settings = opentuner_quicktune.load()
+    if isinstance(info.get("requested_freq_khz"), (int, float)) and not settings["local_test"]:
+        info["requested_freq_khz"] -= settings["rx_correction_khz"]
+    return jsonify(info)
 
 
 @app.route("/help")
@@ -610,9 +660,17 @@ def opentuner_settings_post():
             data.get("target_ip", ""),
             data.get("port", opentuner_quicktune.DEFAULTS["port"]),
             data.get("lnb_offset_khz", opentuner_quicktune.DEFAULTS["lnb_offset_khz"]),
+            data.get("local_test", False),
+            data.get("local_correction_khz", 0),
+            data.get("rx_correction_khz", 0),
+            data.get("auto_calibrate", True),
         )
     except (ValueError, TypeError, OSError) as exc:
         return jsonify({"error": "Invalid setting: {}".format(exc)}), 400
+    # Already on air: re-tune now (e.g. local test just switched on) rather
+    # than only at the next stream start.
+    if STREAM_ENGINE.status()["state"] == "streaming" and CURRENT_TX_FREQUENCY_HZ:
+        _tune_opentuner(CURRENT_TX_FREQUENCY_HZ, CURRENT_SYMBOL_RATE_KSPS or DEFAULT_SYMBOL_RATE)
     return jsonify(saved)
 
 
