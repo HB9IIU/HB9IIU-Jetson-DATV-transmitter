@@ -21,147 +21,152 @@
           <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a></li>
           <li class="nav-item"><span class="nav-link active">Help</span></li>
         </ul>
-        <span class="nav-byline ms-auto">By HB9IIU</span>
+        <span class="ms-auto d-flex gap-2">{% include '_system_status.html' %}</span>
+        <span class="nav-byline ms-3">By HB9IIU</span>
+        {% include '_version_link.html' %}
       </div>
     </div>
   </nav>
 
   <main class="container-xxl pb-4 pb-lg-5 main-top help-page">
     <h1 class="h3 fw-bold mb-2">Quick start guide</h1>
-    <p class="text-muted-custom mb-4">Your first transmission in a few minutes. Follow the steps in order — the home page is laid out the same way (cards 1, 2 and 3).</p>
+    <p class="text-muted-custom mb-4">Follow these steps in order. They match cards 1, 2 and 3 on the Home page.</p>
 
     <article class="surface p-3 p-lg-4 mb-4">
-      <h2 class="h5 fw-bold mb-3">✅ Before you start</h2>
+      <h2 class="h5 fw-bold mb-3">Before you start</h2>
       <ul class="help-list mb-0">
-        <li>The <strong>Pluto</strong> is connected to the Jetson with its USB cable, and its lights are on.</li>
-        <li>The Pluto runs the latest <strong>PlutoDVB2</strong> firmware by Evariste (F5OEO) — the custom firmware that turns it into a DATV transmitter. Download: <a href="https://github.com/F5OEO/plutosdr-fw/releases" target="_blank" rel="noopener">github.com/F5OEO/plutosdr-fw/releases</a>.</li>
-        <li>The <strong>antenna / dish and power amplifier</strong> are connected. Never transmit into an open connector.</li>
-        <li>You have a <strong>receiver</strong> to watch your own signal (for example MiniTioune or OpenTuner, with an LNB on the same dish).</li>
-        <li>You hold an <strong>amateur radio licence</strong> that allows transmitting to QO-100, and your callsign is set on the <a href="{{ url_for('setup') }}">Setup</a> page.</li>
+        <li>Connect the <strong>Pluto</strong> to the Jetson by USB and confirm that it is powered.</li>
+        <li>Install the latest <strong>PlutoDVB2</strong> firmware by Evariste (F5OEO): <a href="https://github.com/F5OEO/plutosdr-fw/releases" target="_blank" rel="noopener">download PlutoDVB2</a>.</li>
+        <li>Connect the <strong>antenna, dish and power amplifier</strong>. Never transmit into an open RF connector.</li>
+        <li>Prepare a <strong>receiver</strong> so that you can monitor your signal, such as a MiniTiouner running the <a href="https://github.com/HB9IIU/HB9IIU-Jetson-DATV-OpenTuner" target="_blank" rel="noopener">modified OpenTuner version for Jetson DATV</a>.</li>
+        <li>Make sure that your amateur radio licence permits QO-100 operation, then enter your callsign on the <a href="{{ url_for('setup') }}">Setup</a> page.</li>
       </ul>
     </article>
 
     <article class="surface p-3 p-lg-4 mb-4">
       <div class="d-flex align-items-center gap-3 mb-3"><span class="step-number">1</span><h2 class="h5 fw-bold mb-0">Choose what to send</h2></div>
-      <p>Card 1 on the home page. Click one of the three buttons:</p>
+      <p>In card 1 on the Home page, select a source:</p>
       <ul class="help-list">
-        <li><strong>Testcard</strong> — a still test picture with a little melody. Use the <strong>‹ ›</strong> arrows on the picture to choose one. The last one, <strong>“SBB Clock (live)”</strong>, is a live station clock with test tones.</li>
-        <li><strong>Camera</strong> — live picture and sound from the USB camera. Choose the camera and the microphone below the preview.</li>
-        <li><strong>Video</strong> — a prepared video file. New videos are added in the <a href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a>.</li>
+        <li><strong>Testcard</strong> — sends a still image with audio. Use the <strong>‹ ›</strong> arrows to select a testcard. <strong>SBB Clock (live)</strong> displays a live station clock with test tones.</li>
+        <li><strong>Camera</strong> — sends live video and audio from the selected USB camera and audio input.</li>
+        <li><strong>Video</strong> — sends a prepared file from the <a href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a>.</li>
       </ul>
-      <div class="help-tip">💡 First time? Use the <strong>Testcard</strong>. It is the easiest to check on your receiver.</div>
+      <div class="help-tip"><strong>Recommended for a first test:</strong> select a testcard; it is the easiest source to verify on a receiver.</div>
     </article>
 
     <article class="surface p-3 p-lg-4 mb-4">
       <div class="d-flex align-items-center gap-3 mb-3"><span class="step-number">2</span><h2 class="h5 fw-bold mb-0">Choose where to send it</h2></div>
-      <p>Card 2 shows the <strong>BATC wideband spectrum</strong>: what is on the satellite right now. Below it is a row of small bars — each bar is one channel.</p>
+      <p>Card 2 shows the live <strong>BATC wideband spectrum</strong>. Each bar below the spectrum represents an available channel position.</p>
       <ul class="help-list">
-        <li><span class="help-slot help-slot-free"></span> <strong>Green</strong> = free. <span class="help-slot help-slot-busy"></span> <strong>Red</strong> = somebody is using it.</li>
-        <li><strong>Click a green bar.</strong> Its frequency appears in the <strong>Freq.</strong> box. Never choose a red one.</li>
-        <li><strong>SR</strong> (symbol rate): <strong>333</strong> is narrower and easier to receive. <strong>500</strong> gives a better picture but needs a stronger signal.</li>
-        <li><strong>FEC</strong>: <strong>3/4</strong> gives a better picture, <strong>2/3</strong> is more robust when reception is difficult.</li>
+        <li><span class="help-slot help-slot-free"></span> <strong>Green</strong> indicates a free channel. <span class="help-slot help-slot-busy"></span> <strong>Red</strong> indicates activity.</li>
+        <li>Select a green bar. Its frequency appears in the <strong>Freq.</strong> field. Do not select an occupied channel.</li>
+        <li><strong>SR</strong> is the symbol rate. <strong>333 kS/s</strong> uses less bandwidth and is easier to receive; <strong>500 kS/s</strong> supports better picture quality but requires a stronger signal.</li>
+        <li><strong>FEC 3/4</strong> provides more picture data; <strong>FEC 2/3</strong> provides stronger error protection.</li>
       </ul>
-      <div class="help-tip">💡 Not sure? Keep <strong>SR 333</strong> and <strong>FEC 3/4</strong> (the defaults).</div>
+      <div class="help-tip"><strong>Recommended starting point:</strong> keep the default settings, <strong>SR 333</strong> and <strong>FEC 3/4</strong>.</div>
     </article>
 
     <article class="surface p-3 p-lg-4 mb-4">
       <div class="d-flex align-items-center gap-3 mb-3"><span class="step-number">3</span><h2 class="h5 fw-bold mb-0">Go on air</h2></div>
       <ol class="help-list">
-        <li><strong>TX power</strong> starts at 0%. Leave it low for now.</li>
+        <li>Keep <strong>TX power</strong> at 0% before starting.</li>
         <li>Press <strong>▶ Start stream</strong>. After a few seconds the button turns red and says <strong>■ Stop stream</strong>.</li>
-        <li>Look at the <strong>Local Pluto RX spectrum</strong> (right). A flat-topped hump means your Pluto is transmitting.</li>
-        <li><em>Only if you use the optional PA relay (see below):</em> wait until card 3 shows <strong>PA: ready</strong>, then press <strong>⚡ Engage PA relay</strong>. If the signal becomes unstable, the relay switches off again by itself.</li>
-        <li>Raise <strong>TX power</strong> slowly while you watch your signal appear in the BATC spectrum.</li>
+        <li>Check the <strong>Local Pluto RX spectrum</strong>. A stable, flat-topped signal confirms that the Pluto is transmitting.</li>
+        <li>If you use the optional PTT relay, wait until the signal looks stable, then press <strong>Switch PTT relay ON</strong>. The spectrum status is advisory; the operator controls the relay.</li>
+        <li>Increase <strong>TX power</strong> gradually while watching your signal on the BATC spectrum.</li>
         <li>Check your receiver: you should see your picture and hear the sound.</li>
-        <li>When you are done, press <strong>■ Stop stream</strong>. TX power goes back to 0% (and the PA relay switches off) by itself.</li>
+        <li>When you are done, press <strong>■ Stop stream</strong>. TX power goes back to 0% and the PTT relay switches off automatically.</li>
       </ol>
-      <div class="help-warning">⚠️ <strong>Your signal must always stay lower than the beacon</strong> — the big block on the left of the BATC spectrum. If you are as strong as the beacon, reduce TX power immediately.</div>
+      <div class="help-warning"><strong>Keep your signal below the beacon level.</strong> The beacon is the large signal on the left of the BATC spectrum. Reduce TX power immediately if your signal reaches that level.</div>
     </article>
 
     <article class="surface p-3 p-lg-4 mb-4">
-      <h2 class="h5 fw-bold mb-3">⚡ The PA relay (optional)</h2>
-      <p>You don't need it — everything works without. It is a safety switch, for example for the <strong>first stage of your power amplifier</strong> (driver / pre-amp):</p>
-      <div class="help-tip mb-3">💡 <strong>Why?</strong> The Pluto can send short <strong>full-power spikes</strong> while it starts up or is reconfigured — whatever the power setting. These spikes can destroy a power amplifier or pre-amp. The relay keeps the PA switched off until the Pluto is running and its signal is clean and stable.</div>
+      <h2 class="h5 fw-bold mb-3">PTT relay (optional)</h2>
+      <p>The optional relay can control the first stage of an external power amplifier, such as a driver or preamplifier.</p>
+      <div class="help-tip mb-3"><strong>Purpose:</strong> the Pluto can produce brief high-level output while starting or being reconfigured, regardless of the power setting. Keep the external amplifier disabled until the transmitted signal is stable.</div>
       <ul class="help-list">
-        <li>It switches on only when <strong>you</strong> press <strong>Engage PA relay</strong>, and only while the Pluto's signal is clean and stable.</li>
-        <li>It switches off <strong>by itself</strong> when you press Stop, when the transmission ends or crashes, or when the signal becomes unstable.</li>
-        <li><strong>Wiring:</strong> physical <strong>pin 18</strong> of the Jetson's 40-pin header (ground e.g. on pin 20). Engaged = <strong>3.3 V</strong>, off = <strong>0 V</strong>.</li>
+        <li>The relay can be switched on only while a stream is running.</li>
+        <li>It switches off when you press <strong>Switch PTT relay OFF</strong>, stop the stream, or the transmission process ends.</li>
+        <li><strong>Wiring:</strong> use physical <strong>pin 18</strong> on the Jetson's 40-pin header and a ground pin, such as physical pin 20. On = <strong>3.3 V</strong>; off = <strong>0 V</strong>.</li>
       </ul>
-      <div class="help-warning">⚠️ <strong>Pin 18 means the physical pin number</strong> on the header — not “GPIO18” (on Raspberry Pi naming that is a different pin). The pin can only deliver a few milliamps: <strong>use a relay module with a 3.3 V logic input</strong> (transistor or optocoupler). Connecting a bare relay coil directly can damage the Jetson.</div>
+      <div class="help-warning"><strong>Use the physical pin number.</strong> Pin 18 does not mean “GPIO18.” Use a relay module with a 3.3 V logic input and a transistor or optocoupler. Never connect a bare relay coil to the Jetson GPIO pin.</div>
     </article>
 
     <article class="surface p-3 p-lg-4 mb-4">
-      <h2 class="h5 fw-bold mb-3">🎬 Adding your own videos</h2>
+      <h2 class="h5 fw-bold mb-3">Add your own videos</h2>
       <ol class="help-list">
-        <li>A USB stick must be plugged into the Jetson and set up once on the <a href="{{ url_for('setup') }}">Setup</a> page.</li>
-        <li>Open the <a href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a>, choose a file, give it a name and press <strong>Upload &amp; prepare video</strong>.</li>
-        <li>The Jetson now prepares the video. This takes time — roughly as long as the video itself (a 1½-hour film ≈ 80 minutes).</li>
-        <li>When it says <strong>Ready for DATV</strong>, the video appears under <strong>Video</strong> on the home page.</li>
+        <li>Connect a USB drive to the Jetson and select it once on the <a href="{{ url_for('setup') }}">Setup</a> page.</li>
+        <li>Open the <a href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a>, choose a source file, enter an output name, then select <strong>Upload &amp; prepare video</strong>.</li>
+        <li>Wait for the upload and conversion to finish. Preparation can take approximately as long as the video's running time.</li>
+        <li>When the status reads <strong>Ready for DATV</strong>, reload the Home page if necessary. The file will be available under <strong>Video</strong>.</li>
       </ol>
-      <div class="help-warning">⚠️ While a video is being prepared: <strong>do not unplug the USB stick, do not restart the Jetson or the app</strong>. The preparation would be lost and has to start again.</div>
+      <div class="help-warning">While a video is being prepared, keep the USB drive connected and do not restart the Jetson or the Video Library service. An interruption may require the conversion to be retried.</div>
     </article>
 
     <article class="surface p-3 p-lg-4 mb-4">
-      <h2 class="h5 fw-bold mb-3">⚙️ The Setup page</h2>
+      <h2 class="h5 fw-bold mb-3">Setup page</h2>
       <ul class="help-list mb-0">
-        <li><strong>Callsign</strong> — your callsign, shown in the picture and sent to the Pluto. Changing it restarts the Pluto.</li>
-        <li><strong>Top/bottom banner &amp; marquee</strong> — the title bar, the bottom bar (callsign, clock, frequency) and the scrolling text shown with Camera and Video.</li>
-        <li><strong>OpenTuner</strong> — lets the Jetson tune OpenTuner to your own signal every time you start a stream (see below).</li>
-        <li><strong>Add prepared videos via USB</strong> — choose which USB stick holds your videos.</li>
-        <li><strong>Restart app</strong> — if something is stuck. Never while a video is being prepared.</li>
+        <li><strong>Callsign</strong> — updates the callsign used by the app and Pluto. Applying a change stops any active transmission and reboots the Pluto.</li>
+        <li><strong>Top/bottom banner &amp; marquee</strong> — configures the overlays used by Camera and Video sources. Testcards are unchanged.</li>
+        <li><strong>OpenTuner</strong> — configures automatic tuning, LNB correction and TX frequency correction.</li>
+        <li><strong>Add prepared videos via USB</strong> — selects the USB drive used by the Video Library.</li>
+        <li><strong>Restart app</strong> — stops any active transmission and restarts the control-panel service. Allow about five seconds.</li>
       </ul>
     </article>
 
     <article class="surface p-3 p-lg-4 mb-4">
-      <h2 class="h5 fw-bold mb-3">📺 Receiving with OpenTuner (optional)</h2>
-      <p>With a <strong>MiniTiouner</strong> receiver and a <strong>modified version of OpenTuner</strong> on a Windows PC, you can watch QO-100 right here in the browser:</p>
+      <h2 class="h5 fw-bold mb-3">Receive with OpenTuner (optional)</h2>
+      <p>A <strong>MiniTiouner</strong> and the modified OpenTuner application can send received video and receiver data to this web interface:</p>
       <ul class="help-list">
-        <li>The <a href="{{ url_for('rx_page') }}">RX</a> page: <strong>click a signal</strong> on the spectrum and OpenTuner tunes to it. The picture and the receiver values (margin, MER, modcod, …) appear below.</li>
-        <li>On the home page, card 1 becomes an <strong>On-air monitor</strong> while you transmit: your own signal, as it comes back from the satellite.</li>
+        <li>On the <a href="{{ url_for('rx_page') }}">RX</a> page, select a signal on the spectrum to tune OpenTuner. The received video and values such as margin, MER and MODCOD appear below.</li>
+        <li>While transmitting, card 1 on the Home page becomes an <strong>On-air monitor</strong> for your signal received through the satellite.</li>
       </ul>
       <p class="fw-semibold mb-2">Setting it up</p>
       <ol class="help-list">
-        <li>Download the modified OpenTuner: <a href="https://github.com/HB9IIU/HB9IIU-Jetson-DATV-OpenTuner" target="_blank" rel="noopener">github.com/HB9IIU/HB9IIU-Jetson-DATV-OpenTuner</a>. The PC and the Jetson must be on the same network.</li>
-        <li>In OpenTuner, under <strong>Extra Features</strong>, tick <strong>Quick Tune Control</strong> (lets the Jetson tune it).</li>
-        <li>Tick <strong>Jetson Stream</strong> and open its settings: enter the Jetson's <strong>IP address</strong> and port <strong>5001</strong>.</li>
-        <li>On the <a href="{{ url_for('setup') }}">Setup</a> page, section <strong>OpenTuner</strong>: switch on <strong>Auto-tune on stream start</strong>, check that the <strong>LNB offset</strong> matches OpenTuner's (usually 9750000), press <strong>Save</strong>, then <strong>Test: tune to beacon</strong>. OpenTuner should jump to the beacon.</li>
+        <li>Install the <a href="https://github.com/HB9IIU/HB9IIU-Jetson-DATV-OpenTuner" target="_blank" rel="noopener">modified OpenTuner</a> on a Windows PC connected to the same network as the Jetson.</li>
+        <li>Under <strong>Extra Features</strong>, enable <strong>Quick Tune Control</strong>.</li>
+        <li>Enable <strong>Jetson Stream</strong>. In its settings, enter the Jetson's IP address and port <strong>5001</strong>.</li>
+        <li>In the <strong>OpenTuner</strong> section of the <a href="{{ url_for('setup') }}">Setup</a> page, enable <strong>Auto-tune on stream start</strong>. Confirm the UDP port and LNB offset; the defaults are <strong>6789</strong> and <strong>9750000 kHz</strong>.</li>
+        <li>Select <strong>Save</strong>, then <strong>Test: tune to beacon</strong>. OpenTuner should tune to and lock on the wideband beacon.</li>
       </ol>
-      <div class="help-tip">💡 The RX page always starts on the beacon, and <strong>muted</strong> — click the speaker icon on the picture for sound. When you change station, the last picture stays frozen with <strong>“Retuning…”</strong> until the new one is there.</div>
+      <div class="help-tip">The RX page opens on the beacon with audio muted. Use the player's speaker control to enable audio. During retuning, the last frame remains visible until the new stream is available.</div>
     </article>
 
     <article class="surface p-3 p-lg-4 mb-4">
-      <h2 class="h5 fw-bold mb-3">🛠️ Something is not working?</h2>
+      <h2 class="h5 fw-bold mb-3">Troubleshooting</h2>
       <dl class="help-faq mb-0">
         <dt>“Select a frequency first”</dt>
-        <dd>Click a green bar under the BATC spectrum before pressing Start.</dd>
+        <dd>Select a green channel below the BATC spectrum before starting the stream.</dd>
         <dt>The BATC spectrum is empty or says DISCONNECTED</dt>
-        <dd>It comes from the internet. Check the Jetson's network connection.</dd>
+        <dd>The spectrum requires internet access. Check the Jetson's network connection, then reload the page.</dd>
         <dt>The RX spectrum still says NO SIGNAL after Start</dt>
-        <dd>Check the Pluto's USB cable, then press Stop and Start again.</dd>
-        <dt>“PA: not ready” does not change (PA relay users)</dt>
-        <dd>The signal is not stable yet. Wait a few seconds. If nothing changes, press Stop and Start again.</dd>
+        <dd>Check the Pluto's USB connection. Stop the stream, then start it again.</dd>
+        <dt>“Checking spectrum…” does not change</dt>
+        <dd>The app has not detected a stable DVB-S2 spectrum. Inspect the local spectrum before deciding whether to operate the PTT relay.</dd>
         <dt>The picture stutters on my receiver</dt>
-        <dd>First try another receiver program or player. The Jetson sends a steady stream.</dd>
+        <dd>Check the received signal margin and network connection. If they are stable, try another receiver program or player.</dd>
         <dt>My video is not in the list</dt>
-        <dd>It is still being prepared (see the Video Library), or the USB stick is not plugged in.</dd>
+        <dd>Check the preparation status in the Video Library and confirm that the selected USB drive is connected. Reload the Home page after preparation finishes.</dd>
         <dt>The RX page or the On-air monitor says “No signal”</dt>
-        <dd>OpenTuner must be running with its tuner locked, and <strong>Jetson Stream</strong> must be ticked with the Jetson's correct IP address.</dd>
+        <dd>OpenTuner must be running and locked. Confirm that <strong>Jetson Stream</strong> is enabled with the correct Jetson IP address and port 5001.</dd>
         <dt>OpenTuner does not react when I click a signal</dt>
-        <dd>Tick <strong>Quick Tune Control</strong> in OpenTuner. If it still doesn't react, enter the PC's IP address on the Setup page (button <strong>Use this PC</strong>) instead of leaving it blank.</dd>
+        <dd>Enable <strong>Quick Tune Control</strong> in OpenTuner. If broadcast tuning does not work, use <strong>Use this PC</strong> on the Setup page to address the PC directly, then save the settings.</dd>
         <dt>A page looks wrong after an update</dt>
-        <dd>Reload the page (F5).</dd>
+        <dd>Reload the page. On most desktop browsers, press <strong>F5</strong>.</dd>
       </dl>
     </article>
 
     <article class="surface p-3 p-lg-4">
-      <h2 class="h5 fw-bold mb-3">📡 Good manners on QO-100</h2>
+      <h2 class="h5 fw-bold mb-3">Operating practice on QO-100</h2>
       <ul class="help-list mb-0">
-        <li>Only use free (green) channels.</li>
-        <li>Never be stronger than the beacon.</li>
+        <li>Use only a free channel.</li>
+        <li>Keep your signal below the beacon level.</li>
         <li>Keep test transmissions short.</li>
         <li>Your callsign is shown in the picture — make sure it is set correctly on the Setup page.</li>
       </ul>
     </article>
   </main>
+  <script src="{{ static_url('js/rx-info.js') }}" defer></script>
+  <script src="{{ static_url('js/pluto-status.js') }}" defer></script>
 </body>
 </html>

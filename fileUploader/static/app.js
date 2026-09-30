@@ -22,3 +22,21 @@ document.addEventListener('click',async e=>{const b=e.target.closest('button');i
 $('closePreview').onclick=()=>$('preview').close();$('preview').addEventListener('close',()=>{$('player').pause();$('player').removeAttribute('src');$('player').load();});
 let refreshing=false;async function refresh(){if(refreshing)return;refreshing=true;try{const s=await api('/api/status');available=s.usb.available;busy=!!s.active;enable();$('connection').textContent=available?'● USB connected':'○ USB unavailable';$('connection').style.color=available?'':'#ffa1ad';$('storagePath').textContent=s.usb.mount||'';$('usbFree').textContent=available?bytesWhole(s.usb.free):'Unavailable';$('usbDetail').textContent=available?bytesWhole(s.usb.total)+' total':s.usb.error||'Drive unavailable';const m=s.metrics;$('cpu').textContent=m.cpu==null?'—':m.cpu.toFixed(0)+'%';$('load').textContent=m.load==null?'4-core Jetson Nano':'1-minute load average: '+m.load.toFixed(0);$('memory').textContent=bytesWhole(m.memory_used);$('memoryDetail').textContent=bytesWhole(m.memory_total)+' total RAM';$('temperature').textContent=m.temperature==null?'—':m.temperature.toFixed(0)+' °C';drawJobs(s.jobs);drawVideos(s.videos);}catch(e){$('connection').textContent='○ Connection lost';available=false;enable();}finally{refreshing=false;}}
 refresh();setInterval(refresh,2000);
+
+async function refreshSystemStatus(){
+  const pluto=$('pluto-connection'),openTuner=$('nav-opentuner-status'),openTunerLabel=$('nav-opentuner-label');
+  try{
+    const status=await fetch('/api/system-status',{cache:'no-store'}).then(response=>{if(!response.ok)throw Error();return response.json();});
+    const otOnline=typeof status.opentuner_age_s==='number'&&status.opentuner_age_s<5;
+    pluto.className=`nav-device-status ${status.pluto_connected?'nav-device-online':'nav-device-offline'}`;
+    pluto.innerHTML=`<span class="nav-device-dot"></span>Pluto ${status.pluto_connected?'connected':'disconnected'}`;
+    openTuner.className=`nav-device-status ${otOnline?'nav-device-online':'nav-device-offline'}`;
+    openTunerLabel.textContent=`OpenTuner ${otOnline?'online':'offline'}`;
+  }catch(_error){
+    pluto.className='nav-device-status nav-device-offline';
+    pluto.innerHTML='<span class="nav-device-dot"></span>Pluto unavailable';
+    openTuner.className='nav-device-status nav-device-offline';
+    openTunerLabel.textContent='OpenTuner offline';
+  }
+}
+refreshSystemStatus();setInterval(refreshSystemStatus,2000);

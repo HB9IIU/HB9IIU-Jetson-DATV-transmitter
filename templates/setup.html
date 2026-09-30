@@ -21,7 +21,9 @@
           <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('help_page') }}">Help</a></li>
         </ul>
-        <span class="nav-byline ms-auto">By HB9IIU</span>
+        <span class="ms-auto d-flex gap-2">{% include '_system_status.html' %}</span>
+        <span class="nav-byline ms-3">By HB9IIU</span>
+        {% include '_version_link.html' %}
       </div>
     </div>
   </nav>
@@ -123,14 +125,13 @@
             <label class="form-check-label" for="opentuner-auto-calibrate">Auto-calibrate on the beacon</label>
           </div>
           <p class="small text-muted-custom mb-3">Whenever OpenTuner is locked on the beacon (e.g. the RX page, which opens on it), the correction is measured and updated by itself - it also follows the LNB drifting with temperature. Switch off to set it by hand.</p>
-          <div class="form-check form-switch mb-1">
-            <input class="form-check-input" type="checkbox" role="switch" id="opentuner-local-test">
-            <label class="form-check-label" for="opentuner-local-test">Local test: receive the uplink directly (no satellite)</label>
+          <label class="form-label fw-semibold" for="opentuner-tx-correction">TX frequency correction (kHz)</label>
+          <input type="number" class="form-control mb-1" id="opentuner-tx-correction" style="max-width: 180px">
+          <p class="small text-muted-custom mb-2">The Pluto's own frequency error. It is measured on your own signal during every transmission (shown in the On-air monitor, with an Apply button) and used from the next stream start on, so your signal lands exactly in the slot you clicked.</p>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="opentuner-tx-auto-apply">
+            <label class="form-check-label" for="opentuner-tx-auto-apply">Apply TX measurements automatically</label>
           </div>
-          <p class="small text-muted-custom mb-2">OpenTuner is tuned to your 2.4 GHz TX frequency itself, so the MiniTiouner picks up the Pluto directly. Keep TX power low. Switch off for normal QO-100 use.</p>
-          <label class="form-label fw-semibold" for="opentuner-local-correction">Local test frequency correction (kHz)</label>
-          <input type="number" class="form-control mb-1" id="opentuner-local-correction" style="max-width: 180px">
-          <p class="small text-muted-custom mb-3">Set it to OpenTuner's "Freq Carrier Offset" (in kHz, e.g. -182) so the MiniTiouner sits right on the Pluto's signal.</p>
           <button class="btn btn-success" id="opentuner-save-button" type="button">Save</button>
           <button class="btn btn-outline-secondary ms-2" id="opentuner-test-button" type="button">Test: tune to beacon</button>
           <span class="small text-muted-custom d-block mt-2" id="opentuner-message"></span>
@@ -189,5 +190,7 @@
   <footer class="container-xxl pb-4 small text-center">JETSON DATV · USB video key setup</footer>
   <script src="{{ static_url('js/app-alert.js') }}" defer></script>
   <script src="{{ static_url('js/setup.js') }}" defer></script>
+  <script src="{{ static_url('js/rx-info.js') }}" defer></script>
+  <script src="{{ static_url('js/pluto-status.js') }}" defer></script>
 </body>
 </html>

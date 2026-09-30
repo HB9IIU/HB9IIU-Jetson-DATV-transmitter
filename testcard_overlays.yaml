@@ -62,9 +62,9 @@ default:
     elapsed:  {x: 640, y: 135, font: "Monospace", size: 14, color: 0xFF000000}
   1280x720:
     callsign: {x: 640, y: 90,  font: "Sans Bold",      size: 22, color: 0xFF414141}
-    freq:     {x: 370, y: 650, font: "Sans Bold",      size: 18, color: 0xFF2C2A2A}
-    volume:   {x: 910, y: 650, font: "Sans Bold",      size: 18, color: 0xFF2C2A2A}
-    elapsed:  {x: 640, y: 650, font: "Monospace", size: 14, color: 0xFF2C2A2A}
+    freq:     {x: 370, y: 650, font: "Sans Bold",      size: 18, color: 0xFFFFFFFF}
+    volume:   {x: 910, y: 650, font: "Sans Bold",      size: 18, color: 0xFFFFFFFF}
+    elapsed:  {x: 640, y: 650, font: "Monospace", size: 14, color: 0xFFFFFFFF}
 "TestCard 4":
   640x360:
     callsign: {x: 640, y: 80,  font: "Sans",      size: 18, color: 0xFFFFFFFF}
@@ -83,10 +83,10 @@ default:
     volume:   {x: 780, y: 580, font: "Sans",      size: 14, color: 0xFF000000}
     elapsed:  {x: 640, y: 135, font: "Monospace", size: 14, color: 0xFF000000}
   1280x720:
-    callsign: {x: 640, y: 80,  font: "Sans",      size: 18, color: 0xFFFFFFFF}
-    freq:     {x: 500, y: 580, font: "Sans",      size: 14, color: 0xFF000000}
-    volume:   {x: 780, y: 580, font: "Sans",      size: 14, color: 0xFF000000}
-    elapsed:  {x: 640, y: 135, font: "Monospace", size: 14, color: 0xFF000000}
+    callsign: {x: 640, y: 50,  font: "Sans",      size: 18, color: 0xFFFFFFFF}
+    freq:     {x: 530, y: 605, font: "Sans",      size: 14, color: 0xFFFFFFFF}
+    volume:   {x: 750, y: 605, font: "Sans",      size: 14, color: 0xFFFFFFFF}
+    elapsed:  {x: 640, y: 605, font: "Monospace", size: 14, color: 0xFFFFFFFF}
 "TestCard 6":
   640x360:
     callsign: {x: 640, y: 80,  font: "Sans",      size: 18, color: 0xFFFFFFFF}

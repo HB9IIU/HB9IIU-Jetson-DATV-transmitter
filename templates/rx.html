@@ -21,7 +21,9 @@
           <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('help_page') }}">Help</a></li>
         </ul>
-        <span class="nav-byline ms-auto">By HB9IIU</span>
+        <span class="ms-auto d-flex gap-2">{% include '_system_status.html' %}</span>
+        <span class="nav-byline ms-3">By HB9IIU</span>
+        {% include '_version_link.html' %}
       </div>
     </div>
   </nav>
@@ -80,5 +82,6 @@
   <script src="{{ static_url('js/rx-spectrum.js') }}" defer></script>
   <script src="{{ static_url('js/rx-player.js') }}" defer></script>
   <script src="{{ static_url('js/rx-info.js') }}" defer></script>
+  <script src="{{ static_url('js/pluto-status.js') }}" defer></script>
 </body>
 </html>

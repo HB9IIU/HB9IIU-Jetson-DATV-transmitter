@@ -21,7 +21,9 @@
           <li class="nav-item"><a class="nav-link" href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a></li>
           <li class="nav-item"><a class="nav-link" href="{{ url_for('help_page') }}">Help</a></li>
         </ul>
-        <span class="nav-byline ms-auto">By HB9IIU</span>
+        <div class="ms-auto me-3 d-flex gap-2">{% include '_system_status.html' %}</div>
+        <span class="nav-byline">By HB9IIU</span>
+        {% include '_version_link.html' %}
       </div>
     </div>
   </nav>
@@ -51,6 +53,11 @@
               <div class="progress-bar" id="tx-monitor-quality" style="width: 0%;"></div>
             </div>
             <div class="small text-muted-custom text-truncate" id="tx-monitor-summary"></div>
+            <!-- Pluto TX error measured on our own signal (app.py _measure_tx). -->
+            <div class="small d-flex align-items-center gap-2 mt-1" style="min-height: 1.6rem;">
+              <span class="text-truncate" id="tx-monitor-txcal"></span>
+              <button class="btn btn-sm btn-outline-warning py-0 ms-auto d-none" id="tx-monitor-txcal-apply" type="button">Apply</button>
+            </div>
           </div>
 
           <div class="source-choice source-choice-3 mb-4" role="group" aria-label="Source type">
@@ -100,7 +107,7 @@
                 {% if testcard.value == sbb_clock_testcard %}
                 <option value="{{ testcard.value }}" data-preview-url="{{ url_for('static', filename='img/sbb_clock_preview.png', v=testcard.version) }}">{{ testcard.label }}</option>
                 {% else %}
-                <option value="{{ testcard.value }}" data-preview-url="{{ url_for('testcard_preview', filename=testcard.value, v=testcard.version) }}">{{ testcard.label }}</option>
+                <option value="{{ testcard.value }}" data-preview-url="{{ static_url(testcard.preview_static) if testcard.preview_static else url_for('testcard_preview', filename=testcard.value, v=testcard.version) }}">{{ testcard.label }}</option>
                 {% endif %}
                 {% else %}
                 <option value="">No testcards found</option>
@@ -158,17 +165,24 @@
               <div class="small text-muted-custom">Signal summary</div>
               <div class="fw-semibold" id="signal-summary">DVB-S2 · QPSK · Select a frequency · 333 kS/s · FEC 3/4</div>
             </div>
-            <span class="small fw-semibold text-nowrap text-secondary ms-auto" id="pa-relay-status" title="PA relay: powers the CN0417 pre-amp only once the local Pluto RX spectrum shows a stable, locked signal">
-              <span class="telemetry-dot me-2"></span>PA: idle
+            <span class="small fw-semibold text-nowrap text-secondary ms-auto" id="spectrum-advisory-status" title="Advisory check of the local Pluto RX spectrum">
+              <span class="telemetry-dot me-2"></span>Spectrum: waiting for stream
             </span>
           </div>
 
-          <div class="d-flex justify-content-between align-items-center mb-2"><label class="form-label fw-semibold mb-0" for="tx-gain">TX power</label><span class="gain-value" id="tx-gain-value">0% <small>(−60 dB)</small></span></div>
-          <input class="form-range" type="range" id="tx-gain" min="-60" max="0" step="0.25" value="-60" aria-label="TX gain">
-          <div class="d-flex justify-content-between small text-muted-custom mb-4"><span>0% (near-off)</span><span>100% (max power)</span></div>
+          <div class="d-flex justify-content-between align-items-center mb-2"><label class="form-label fw-semibold mb-0" for="tx-gain">TX power</label><span class="gain-value" id="tx-gain-value">0%</span></div>
+          <input class="form-range mb-3" type="range" id="tx-gain" min="-60" max="0" step="0.25" value="-60" aria-label="TX gain">
 
           <div class="row g-2">
             <div class="col-12"><button class="btn btn-success btn-lg fw-bold w-100" id="stream-toggle" type="button">▶ Start stream</button></div>
+          </div>
+
+          <!-- PTT relay buttons sit under the stream button. The min-height
+               reserves the button's space even while hidden, so this card
+               never jumps in height. -->
+          <div class="text-center mt-2" style="min-height: 3rem;">
+            <button class="btn btn-warning btn-lg fw-bold w-100 d-none" id="pa-relay-engage-button" type="button">Switch PTT relay ON</button>
+            <button class="btn btn-outline-danger btn-lg fw-bold w-100 d-none" id="pa-relay-disengage-button" type="button">Switch PTT relay OFF</button>
           </div>
 
           <div class="d-flex justify-content-end mt-2">
@@ -179,15 +193,15 @@
       </div>
 
       <div class="col-12 col-xl-4">
-        <article class="surface step-card p-3 p-lg-4">
-          <div class="batc-panel">
+        <article class="surface step-card p-3 p-lg-4 d-flex flex-column">
+          <div class="batc-panel flex-grow-1 d-flex flex-column">
             <div class="d-flex justify-content-between align-items-center px-3 pt-3 pb-2">
               <div>
                 <div class="fw-semibold">Local Pluto RX spectrum</div>
               </div>
               <span class="badge rounded-pill text-bg-secondary" id="local-fft-status">NO SIGNAL</span>
             </div>
-            <div class="batc-spectrum" style="height: 8rem;" aria-label="Live local Pluto RX spectrum, confirming real transmission">
+            <div class="batc-spectrum flex-grow-1" style="height: auto; min-height: 8rem;" aria-label="Live local Pluto RX spectrum, confirming real transmission">
               <canvas id="local-fft-canvas"></canvas>
             </div>
             <div class="d-flex justify-content-between small text-muted-custom px-3 py-2" id="local-fft-axis">
@@ -196,29 +210,18 @@
               <span id="local-fft-freq-right">--</span>
             </div>
           </div>
-          <!-- PA relay buttons live next to the RX spectrum they depend on
-               (engaging needs a stable, locked signal shown here). The
-               min-height reserves the button's space even while hidden, so
-               this card - and card 3 next to it - never jumps in height. -->
-          <div class="text-center mt-3" style="min-height: 3rem;">
-            <button class="btn btn-warning btn-lg fw-bold px-4 d-none" id="pa-relay-engage-button" type="button">⚡ Engage PA relay</button>
-            <button class="btn btn-outline-danger btn-lg fw-bold px-4 d-none" id="pa-relay-disengage-button" type="button">Power down PA relay</button>
-          </div>
         </article>
       </div>
     </section>
 
     <section class="mt-4" aria-label="Live telemetry">
-      <article class="surface p-3 p-lg-4">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-          <h2 class="h5 mb-0">Telemetry</h2>
-          <span class="small fw-semibold text-secondary" id="pluto-connection"><span class="telemetry-dot me-2"></span>Pluto disconnected</span>
-        </div>
-        <div class="row g-3 g-lg-4 text-center">
-          <div class="col-6 col-lg"><div class="telemetry-label">Jetson CPU</div><div class="telemetry-value" id="jetson-cpu-temp">-- °C</div></div>
-          <div class="col-6 col-lg"><div class="telemetry-label">CPU load</div><div class="telemetry-value" id="jetson-cpu-load">--%</div></div>
-          <div class="col-6 col-lg"><div class="telemetry-label">Fan</div><div class="telemetry-value" id="fan-state">--</div><div class="small text-muted-custom" id="fan-pwm">PWM --</div></div>
-          <div class="col-6 col-lg"><div class="telemetry-label">Pluto temperature</div><div class="telemetry-value" id="pluto-temp">-- °C</div></div>
+      <article class="surface px-3 py-2 px-lg-4">
+        <div class="d-flex flex-wrap align-items-baseline justify-content-between gap-3">
+          <h2 class="h6 mb-0">Telemetry</h2>
+          <div><span class="telemetry-label me-2">Jetson CPU</span><span class="telemetry-value" id="jetson-cpu-temp">-- °C</span></div>
+          <div><span class="telemetry-label me-2">CPU load</span><span class="telemetry-value" id="jetson-cpu-load">--%</span></div>
+          <div><span class="telemetry-label me-2">Fan</span><span class="telemetry-value" id="fan-state">--</span> <span class="small text-muted-custom" id="fan-pwm">PWM --</span></div>
+          <div><span class="telemetry-label me-2">Pluto temperature</span><span class="telemetry-value" id="pluto-temp">-- °C</span></div>
         </div>
       </article>
     </section>
@@ -227,6 +230,7 @@
   <script src="{{ static_url('js/app-alert.js') }}" defer></script>
   <script src="{{ static_url('js/rx-player.js') }}" defer></script>
   <script src="{{ static_url('js/rx-info.js') }}" defer></script>
+  <script src="{{ static_url('js/pluto-status.js') }}" defer></script>
   <script src="{{ static_url('js/datv.js') }}" defer></script>
   <script src="{{ static_url('js/batc-spectrum.js') }}" defer></script>
 </body>

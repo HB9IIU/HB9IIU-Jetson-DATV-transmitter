@@ -35,3 +35,60 @@ function showAppAlert(message) {
   appAlertOverlay.classList.remove('d-none');
   appAlertOverlay.classList.add('d-flex');
 }
+
+/**
+ * Same look as showAppAlert(), but with Cancel / confirm buttons instead of
+ * window.confirm(). Resolves true only when the confirm button is clicked;
+ * Cancel, Escape or a backdrop click resolve false.
+ */
+let appConfirmOverlay = null;
+
+function showAppConfirm(title, message, confirmLabel = 'OK') {
+  if (!appConfirmOverlay) {
+    appConfirmOverlay = document.createElement('div');
+    appConfirmOverlay.className =
+      'position-fixed top-0 start-0 w-100 h-100 d-none align-items-center justify-content-center p-3';
+    appConfirmOverlay.style.background = 'rgba(0,0,0,0.75)';
+    appConfirmOverlay.style.zIndex = '1080';
+    appConfirmOverlay.innerHTML = `
+      <div class="surface p-4 text-center" style="width: 100%; max-width: 420px;">
+        <div class="fs-1 text-warning mb-2" aria-hidden="true">⚠</div>
+        <h2 class="h5 fw-bold mb-2" id="app-confirm-title"></h2>
+        <p class="text-muted-custom mb-4" id="app-confirm-message"></p>
+        <div class="d-flex gap-2 justify-content-center">
+          <button type="button" class="btn btn-outline-secondary px-4" id="app-confirm-cancel">Cancel</button>
+          <button type="button" class="btn btn-warning fw-bold px-4" id="app-confirm-ok"></button>
+        </div>
+      </div>`;
+    document.body.appendChild(appConfirmOverlay);
+  }
+  appConfirmOverlay.querySelector('#app-confirm-title').textContent = title;
+  appConfirmOverlay.querySelector('#app-confirm-message').textContent = message;
+  const okButton = appConfirmOverlay.querySelector('#app-confirm-ok');
+  const cancelButton = appConfirmOverlay.querySelector('#app-confirm-cancel');
+  okButton.textContent = confirmLabel;
+  appConfirmOverlay.classList.remove('d-none');
+  appConfirmOverlay.classList.add('d-flex');
+  // Focus Cancel so a stray Enter doesn't confirm.
+  cancelButton.focus();
+
+  return new Promise((resolve) => {
+    const finish = (confirmed) => {
+      appConfirmOverlay.classList.add('d-none');
+      appConfirmOverlay.classList.remove('d-flex');
+      okButton.removeEventListener('click', onOk);
+      cancelButton.removeEventListener('click', onCancel);
+      appConfirmOverlay.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey);
+      resolve(confirmed);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const onBackdrop = (event) => { if (event.target === appConfirmOverlay) finish(false); };
+    const onKey = (event) => { if (event.key === 'Escape') finish(false); };
+    okButton.addEventListener('click', onOk);
+    cancelButton.addEventListener('click', onCancel);
+    appConfirmOverlay.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey);
+  });
+}

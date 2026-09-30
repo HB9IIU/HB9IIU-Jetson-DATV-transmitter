@@ -6,6 +6,7 @@ old_project_TO_DELETE/
 overlay_settings.json
 pluto_callsign.json
 opentuner_settings.json
+tx_offset_log.csv
 usb_video_key_registry.json
 __pycache__/
 *.pyc

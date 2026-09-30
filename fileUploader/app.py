@@ -5,12 +5,15 @@ import os
 import secrets
 import threading
 import time
-from flask import Flask, abort, jsonify, render_template, request, send_file
+import urllib.request
+from flask import Flask, abort, jsonify, render_template, request, send_file, url_for
 from werkzeug.exceptions import HTTPException
 from engine import BASE, Engine, PREVIEW_FOLDER
 
 with open(os.path.join(BASE, 'config.json')) as f:
     CONFIG = json.load(f)
+with open(os.path.join(os.path.dirname(BASE), 'app_info.json')) as f:
+    APP_INFO = json.load(f)
 os.makedirs(os.path.join(BASE, 'state'), exist_ok=True)
 INSTANCE_LOCK = open(os.path.join(BASE, 'state', 'service.lock'), 'a')
 fcntl.flock(INSTANCE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -19,6 +22,33 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = CONFIG['max_upload_bytes']
 TOKEN = secrets.token_hex(32)
 telemetry = {}
+
+
+@app.route('/api/system-status')
+def system_status():
+    """Bridge main-app status to this service's separate :8088 origin."""
+    result = {'pluto_connected': False, 'opentuner_age_s': None}
+    for path, key in (('/api/telemetry', 'telemetry'), ('/api/rx/info', 'rx')):
+        try:
+            response = urllib.request.urlopen('http://127.0.0.1' + path, timeout=1)
+            payload = json.loads(response.read().decode('utf-8'))
+            if key == 'telemetry':
+                result['pluto_connected'] = bool(payload.get('pluto_connected'))
+            else:
+                result['opentuner_age_s'] = payload.get('age_s')
+        except (OSError, ValueError):
+            pass
+    return jsonify(result)
+
+@app.context_processor
+def static_versioning():
+    def static_url(filename):
+        try:
+            version = int(os.path.getmtime(os.path.join(app.static_folder, filename)))
+        except OSError:
+            version = 0
+        return url_for('static', filename=filename, v=version)
+    return {'static_url': static_url}
 
 def metrics_loop():
     previous = None
@@ -67,7 +97,9 @@ def errors(exc):
 
 @app.route('/')
 def index():
-    return render_template('index.html', token=TOKEN)
+    return render_template('index.html', token=TOKEN,
+                           app_version=APP_INFO['version'],
+                           github_url=APP_INFO['github_url'])
 
 @app.route('/api/status')
 def status():

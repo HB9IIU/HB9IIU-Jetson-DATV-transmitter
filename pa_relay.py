@@ -1,18 +1,9 @@
-"""Policy layer for the PA-relay safety interlock - the "when is it safe to
-power the pre-amp" decision, sitting on top of pa_relay_gpio.py's plain
-hardware wrapper and pluto_signal_stability.py's plain per-frame detector.
+"""Operator-controlled PTT relay plus independent spectrum observation.
 
-Why this exists: the Jetson's RF chain includes a CN0417 pre-amp driving a
-200W final PA. Powering that pre-amp while the Pluto's own RF output is
-still a startup transient/spike - rather than a locked, clean DVB-S2
-signal - risks damaging the PA. Blind timing (wait N seconds after Start
-Stream) says nothing about whether the signal actually locked, so this
-instead watches the real local Pluto RX FFT (already bridged in-process by
-pluto_fft_bridge.py) and only arms readiness once several consecutive
-frames look like a genuine flat-top plateau. Even then, this module never
-engages the relay on its own - an operator must explicitly confirm via
-request_engage(), since this is powering a 200W PA. That's a deliberate
-human-in-the-loop gate, not an oversight.
+The PTT relay can be switched on whenever a stream is running. Spectrum
+analysis is advisory display data only: it never enables, disables, blocks,
+or switches the relay. Stopping or crashing the stream still switches the
+relay off.
 
 Lives in app.py's own long-running process (constructed once at Flask
 startup - see app.py), NOT in the per-stream datv_web_worker.py/
@@ -30,16 +21,13 @@ than the reverse.
 States: idle -> waiting -> ready -> engaged, plus a sticky fault state.
   idle:    no stream running.
   waiting: streaming, spectrum not yet a stable plateau.
-  ready:   spectrum has held a stable plateau for several consecutive
-           checks - awaiting operator confirmation. Never auto-advances.
+  ready:   spectrum has held a stable plateau for several consecutive checks.
   engaged: operator confirmed; the relay is energized.
   fault:   a GPIO call failed. Sticky - stays until a fresh stream start
            gives it a clean slate (see tick()), never auto-clears while
            idle, so a real hardware problem doesn't just quietly vanish
            from the UI on its own.
-Any engaged session that goes bad (signal lost/degraded), or the stream
-stopping/crashing, immediately disengages and drops back to
-waiting/idle - this auto-protect path is the actual point of the feature.
+Spectrum changes never alter an engaged relay. Stream stop/crash does.
 """
 
 import logging
@@ -54,9 +42,8 @@ log = logging.getLogger(__name__)
 MONITOR_TICK_SECONDS = 0.25
 # Debounce lives here, not in pluto_signal_stability.evaluate_frame() - that
 # function is a stateless per-frame judgement; a single good-looking frame
-# could just be noise that happened to line up. Deliberately asymmetric
-# (faster to revoke than to grant) - a safety gate should drop out quickly
-# but not flap open easily.
+# could just be noise that happened to line up. Debouncing keeps the
+# advisory status label from changing too easily.
 STABLE_CONSECUTIVE_FRAMES = 10   # ~2.5s at the tick rate above
 UNSTABLE_CONSECUTIVE_FRAMES = 3  # ~0.75s
 
@@ -88,18 +75,22 @@ class RelayController(object):
             result = self._last_result
             return {
                 "state": self._state,
+                "streaming": self._get_stream_state() == "streaming",
+                "engaged": pa_relay_gpio.is_engaged(),
                 "fault_reason": pa_relay_gpio.fault_reason() if self._state == "fault" else None,
                 "detector": {
+                    "is_plateau": result.is_plateau,
                     "margin_ratio": result.margin_ratio,
                     "coverage_ratio": result.coverage_ratio,
+                    "reason": result.reason,
                 } if result is not None else None,
             }
 
     def request_engage(self):
-        """Operator-initiated - only succeeds from "ready". Returns
+        """Operator-initiated while streaming; spectrum state is irrelevant. Returns
         (ok, state) so the Flask route can pick the right HTTP status."""
         with self._lock:
-            if self._state != "ready":
+            if self._get_stream_state() != "streaming":
                 return False, self._state
             if pa_relay_gpio.engage():
                 self._state = "engaged"
@@ -198,12 +189,9 @@ class RelayController(object):
             return
         if self._state == "ready":
             self._state = "waiting"
-        elif self._state == "engaged":
-            # The actual point of this whole feature: signal degraded
-            # after the operator armed it - cut power to the pre-amp
-            # immediately rather than waiting for a human to notice.
-            log.warning("pa_relay: signal lost/degraded while engaged - auto-disengaging")
-            self._disengage_locked(next_state="waiting")
+        # An engaged relay remains engaged: spectrum analysis is advisory
+        # only. Stream stop/crash and the operator's OFF action still
+        # disengage it.
 
 
 _monitor_started = False

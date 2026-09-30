@@ -27,6 +27,21 @@
   const mhz = (khz) => (known(khz) ? (khz / 1000).toFixed(3) + ' MHz' : '--');
   const joined = (...parts) => parts.filter(known).join(' · ') || '--';
 
+  const navStatus = document.querySelector('#nav-opentuner-status');
+  const navLabel = document.querySelector('#nav-opentuner-label');
+
+  function renderNavStatus(info) {
+    if (!navStatus || !navLabel) return;
+    const hasEverReported = info.age_s !== null && info.age_s !== undefined;
+    const online = hasEverReported && info.age_s < STALE_S;
+    navStatus.classList.remove('nav-device-unknown', 'nav-device-online', 'nav-device-offline');
+    navStatus.classList.add(online ? 'nav-device-online' : 'nav-device-offline');
+    navLabel.textContent = online ? 'OpenTuner online' : 'OpenTuner offline';
+    navStatus.title = online
+      ? `Receiver status received ${info.age_s.toFixed(1)} s ago`
+      : (hasEverReported ? `No receiver update for ${Math.round(info.age_s)} s` : 'No receiver status received');
+  }
+
   /**
    * elements: { lockBadge, marginValue, merValue, qualityBar, and optionally
    * rows (tbody for the full table), ageLabel, summary (one-line text) }.
@@ -109,7 +124,11 @@
     async function poll() {
       try {
         const response = await fetch('/api/rx/info', { cache: 'no-store' });
-        if (response.ok) render(await response.json());
+        if (response.ok) {
+          const info = await response.json();
+          render(info);
+          renderNavStatus(info);
+        }
       } catch (_error) {
         // Keep the last values; the next poll will tell.
       }
@@ -142,5 +161,22 @@
       rows: rxRows,
       ageLabel: document.querySelector('#rx-info-age'),
     }).start();
+  }
+
+  // Pages without the full receiver panel still need the header heartbeat.
+  if (navStatus && !rxRows) {
+    async function pollNavStatus() {
+      try {
+        const response = await fetch('/api/rx/info', { cache: 'no-store' });
+        if (response.ok) renderNavStatus(await response.json());
+      } catch (_error) {
+        navStatus.classList.remove('nav-device-unknown', 'nav-device-online');
+        navStatus.classList.add('nav-device-offline');
+        navLabel.textContent = 'OpenTuner offline';
+        navStatus.title = 'Jetson could not read receiver status';
+      }
+    }
+    pollNavStatus();
+    window.setInterval(pollNavStatus, POLL_MS);
   }
 }());

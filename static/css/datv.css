@@ -41,8 +41,8 @@
     .input-group-text { background: #172938; border-color: #3a5265; color: var(--muted); }
     .preview { aspect-ratio: 16/9; border-radius: .75rem; overflow: hidden; border: 1px solid #395267; background: linear-gradient(145deg, #163b59, #071727); position: relative; }
     .preview-message { position: absolute; inset: 0; display: grid; place-items: center; color: #76a1c3; font-size: .77rem; font-weight: 800; letter-spacing: .14em; }
-    .preview img { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; display: none; }
-    .preview.is-live img { display: block; }
+    .preview img { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; }
+    .preview.is-live img { opacity: 1; }
     .preview.is-live .preview-message { display: none; }
 
     .carousel-arrow { position: absolute; z-index: 3; top: 50%; transform: translateY(-50%); width: 2.6rem; height: 2.6rem; display: grid; place-items: center; border-radius: 50%; border: 1px solid #3a5265; background: rgba(7, 17, 27, .65); color: #fff; font-size: 1.4rem; line-height: 1; cursor: pointer; transition: background-color .15s ease, border-color .15s ease; }
@@ -63,6 +63,14 @@
     .help-faq dt { margin-top: .8rem; } .help-faq dt:first-child { margin-top: 0; }
     .help-faq dd { margin: .15rem 0 0; color: var(--muted); }
     .nav-byline { font-size: 1.5rem; font-weight: 700; color: #8a98a6; white-space: nowrap; }
+    .nav-version { display: inline-flex; align-items: center; gap: .35rem; margin-left: .85rem; color: var(--muted); font-size: .82rem; font-weight: 700; line-height: 1; text-decoration: none; white-space: nowrap; transition: color .15s ease; }
+    .nav-version:hover, .nav-version:focus-visible { color: #fff; }
+    .nav-version-icon { width: 1.05rem; height: 1.05rem; flex: 0 0 auto; }
+    .nav-device-status { display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .6rem; border: 1px solid #344958; border-radius: 999px; color: var(--muted); font-size: .75rem; font-weight: 700; line-height: 1; white-space: nowrap; }
+    .nav-device-dot { width: .5rem; height: .5rem; border-radius: 50%; background: #758594; }
+    .nav-device-online { color: #7ce9ae; border-color: rgba(37, 194, 110, .45); background: rgba(37, 194, 110, .1); }
+    .nav-device-online .nav-device-dot { background: #25c26e; box-shadow: 0 0 .4rem rgba(37, 194, 110, .8); }
+    .nav-device-offline { color: #9aa8b4; }
     /* Home page top gap: 25% less than Bootstrap's py-4 / py-lg-5 (1.5 / 3 rem). */
     .main-top { padding-top: 1.125rem; }
     @media (min-width: 992px) { .main-top { padding-top: 2.25rem; } }

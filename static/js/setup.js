@@ -323,10 +323,10 @@ const opentunerIp = document.querySelector('#opentuner-ip');
 const opentunerThisPcButton = document.querySelector('#opentuner-this-pc-button');
 const opentunerPort = document.querySelector('#opentuner-port');
 const opentunerOffset = document.querySelector('#opentuner-offset');
-const opentunerLocalTest = document.querySelector('#opentuner-local-test');
-const opentunerLocalCorrection = document.querySelector('#opentuner-local-correction');
 const opentunerRxCorrection = document.querySelector('#opentuner-rx-correction');
 const opentunerAutoCalibrate = document.querySelector('#opentuner-auto-calibrate');
+const opentunerTxCorrection = document.querySelector('#opentuner-tx-correction');
+const opentunerTxAutoApply = document.querySelector('#opentuner-tx-auto-apply');
 const opentunerSaveButton = document.querySelector('#opentuner-save-button');
 const opentunerTestButton = document.querySelector('#opentuner-test-button');
 const opentunerMessage = document.querySelector('#opentuner-message');
@@ -347,10 +347,10 @@ async function loadOpentunerSettings() {
     opentunerIp.value = settings.target_ip;
     opentunerPort.value = settings.port;
     opentunerOffset.value = settings.lnb_offset_khz;
-    opentunerLocalTest.checked = settings.local_test;
-    opentunerLocalCorrection.value = settings.local_correction_khz;
     opentunerRxCorrection.value = settings.rx_correction_khz;
     opentunerAutoCalibrate.checked = settings.auto_calibrate;
+    opentunerTxCorrection.value = settings.tx_correction_khz;
+    opentunerTxAutoApply.checked = settings.tx_auto_apply;
     opentunerClientIp = settings.client_ip || '';
   } catch (error) {
     console.error('loadOpentunerSettings failed:', error);
@@ -367,10 +367,10 @@ async function saveOpentunerSettings() {
       target_ip: opentunerIp.value.trim(),
       port: opentunerPort.value,
       lnb_offset_khz: opentunerOffset.value,
-      local_test: opentunerLocalTest.checked,
-      local_correction_khz: opentunerLocalCorrection.value || 0,
       rx_correction_khz: opentunerRxCorrection.value || 0,
       auto_calibrate: opentunerAutoCalibrate.checked,
+      tx_correction_khz: opentunerTxCorrection.value || 0,
+      tx_auto_apply: opentunerTxAutoApply.checked,
     }),
   });
   const result = await response.json();
@@ -401,7 +401,7 @@ opentunerTestButton?.addEventListener('click', async () => {
     const response = await fetch('/api/opentuner/test', { method: 'POST' });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Request failed');
-    setOpentunerMessage('Sent to ' + result.destination + ': ' + result.message, false);
+    setOpentunerMessage('', false);
   } catch (error) {
     setOpentunerMessage('Test failed: ' + error.message, true);
   } finally {

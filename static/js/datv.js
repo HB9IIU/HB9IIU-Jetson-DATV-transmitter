@@ -19,6 +19,7 @@ const videoSelect = document.querySelector('#prepared-video');
 const filePreview = document.querySelector('#file-preview');
 const filePreviewImage = document.querySelector('#file-preview-image');
 const filePreviewMessage = document.querySelector('#file-preview-message');
+let filePreviewRequest = 0;
 
 function stopPreview() {
   previewImage.removeAttribute('src');
@@ -35,9 +36,14 @@ function startPreview() {
   }
   previewMessage.textContent = 'STARTING PREVIEW…';
   previewImage.src = `${previewUrl}&_=${Date.now()}`;
+  // An MJPEG response is an open-ended multipart stream, so some browsers
+  // never dispatch a conventional completed `load` event. Display the image
+  // immediately; the error handler below restores the message if it fails.
+  preview.classList.add('is-live');
 }
 
 function showFilePreview(select, unavailableText) {
+  const requestId = ++filePreviewRequest;
   const selected = select.options[select.selectedIndex];
   const previewUrl = selected ? selected.dataset.previewUrl : '';
   filePreview.classList.remove('is-live');
@@ -47,6 +53,17 @@ function showFilePreview(select, unavailableText) {
     return;
   }
   filePreviewMessage.textContent = 'LOADING PREVIEW…';
+  // Install handlers before assigning src. The request ID prevents an older
+  // response from changing the state after another item has been selected.
+  filePreviewImage.onload = () => {
+    if (requestId !== filePreviewRequest) return;
+    filePreview.classList.add('is-live');
+  };
+  filePreviewImage.onerror = () => {
+    if (requestId !== filePreviewRequest) return;
+    filePreview.classList.remove('is-live');
+    filePreviewMessage.textContent = 'PREVIEW UNAVAILABLE';
+  };
   filePreviewImage.src = previewUrl;
 }
 
@@ -79,17 +96,26 @@ function stepTestcard(direction) {
 testcardPrevButton?.addEventListener('click', () => stepTestcard(-1));
 testcardNextButton?.addEventListener('click', () => stepTestcard(1));
 
+// The browser previews are small, dedicated JPEGs. Warm them into the
+// browser cache shortly after page load so the carousel arrows respond
+// immediately, even when the Jetson is busy starting or stopping a stream.
+function preloadTestcardPreviews() {
+  testcardSelect?.querySelectorAll('option[data-preview-url]').forEach((option) => {
+    const previewUrl = option.dataset.previewUrl;
+    if (previewUrl) {
+      const image = new Image();
+      image.src = previewUrl;
+    }
+  });
+}
+
+window.setTimeout(preloadTestcardPreviews, 250);
+
 previewImage.addEventListener('load', () => preview.classList.add('is-live'));
 previewImage.addEventListener('error', () => {
   preview.classList.remove('is-live');
   previewMessage.textContent = 'PREVIEW UNAVAILABLE';
 });
-filePreviewImage.addEventListener('load', () => filePreview.classList.add('is-live'));
-filePreviewImage.addEventListener('error', () => {
-  filePreview.classList.remove('is-live');
-  filePreviewMessage.textContent = 'PREVIEW UNAVAILABLE';
-});
-
 cameraSelect.addEventListener('change', startPreview);
 testcardSelect.addEventListener('change', () => {
   showFilePreview(testcardSelect, 'NO TESTCARDS FOUND');
@@ -189,8 +215,7 @@ function updateTxGain() {
   const min = parseFloat(txGain.min);
   const max = parseFloat(txGain.max);
   const percent = Math.round(((dbValue - min) / (max - min)) * 100);
-  const dbText = `${dbValue} dB`.replace('-', '−');
-  txGainValue.innerHTML = `${percent}% <small>(${dbText})</small>`;
+  txGainValue.textContent = `${percent}%`;
 }
 txGain?.addEventListener('input', updateTxGain);
 updateTxGain();
@@ -236,91 +261,109 @@ async function updateTelemetry() {
     document.querySelector('#fan-state').textContent = data.fan?.state || '--';
     document.querySelector('#fan-pwm').textContent = typeof data.fan?.pwm === 'number' ? `PWM ${data.fan.pwm}` : 'PWM --';
     document.querySelector('#pluto-temp').textContent = formatTelemetryNumber(data.pluto_temp_c, 1, ' °C');
-    connection.innerHTML = `<span class="telemetry-dot me-2"></span>Pluto ${data.pluto_connected ? 'connected' : 'disconnected'}`;
-    connection.className = `small fw-semibold ${data.pluto_connected ? 'text-success' : 'text-secondary'}`;
+    connection.innerHTML = `<span class="nav-device-dot" aria-hidden="true"></span>Pluto ${data.pluto_connected ? 'connected' : 'disconnected'}`;
+    connection.className = `nav-device-status ${data.pluto_connected ? 'nav-device-online' : 'nav-device-offline'}`;
   } catch (_error) {
-    connection.innerHTML = '<span class="telemetry-dot me-2"></span>Telemetry unavailable';
-    connection.className = 'small fw-semibold text-danger';
+    connection.innerHTML = '<span class="nav-device-dot" aria-hidden="true"></span>Pluto unavailable';
+    connection.className = 'nav-device-status nav-device-offline';
   }
 }
 
 updateTelemetry();
 window.setInterval(updateTelemetry, 2000);
 
-// PA relay safety interlock (see pa_relay.py) - the CN0417 pre-amp/200W PA
-// only gets powered once the local Pluto RX spectrum has shown a stable
-// signal AND the operator explicitly confirms via #pa-relay-engage-button.
+// Operator-controlled PTT relay (see pa_relay.py). The local Pluto RX
+// spectrum supplies advisory status; only the operator controls the relay.
 // This state is human-timescale (state changes are debounced server-side
 // over several seconds of frames), so it's polled at 1s like
 // #stream-status-message - not at the FFT canvas's 150ms redraw rate.
-const paRelayStatus = document.querySelector('#pa-relay-status');
+const spectrumAdvisoryStatus = document.querySelector('#spectrum-advisory-status');
 const paRelayEngageButton = document.querySelector('#pa-relay-engage-button');
 const paRelayDisengageButton = document.querySelector('#pa-relay-disengage-button');
+let pttRelayEngaged = false;
+// Drawn green in the local RX spectrum while the advisory says "seems OK".
+let spectrumLooksOk = false;
 
-// Short labels - they sit next to the signal summary in card 3's header and
-// must never wrap onto their own line (that made the card jump in height);
-// the full explanation is the tooltip (PA_RELAY_TITLE).
-const PA_RELAY_TEXT = {
-  idle: 'PA: idle',
-  waiting: 'PA: not ready',
-  ready: 'PA: ready',
-  engaged: 'PA: ENGAGED',
-  fault: 'PA: FAULT',
-};
-const PA_RELAY_TITLE = {
-  idle: 'PA relay idle - no transmission',
-  waiting: 'PA relay not ready - the local RX spectrum is not stable yet',
-  ready: 'PA relay ready - press "Engage PA relay" to power the PA',
-  engaged: 'PA relay engaged - PA powered, live',
-  fault: 'PA relay fault',
-};
-const PA_RELAY_CLASS = {
-  idle: 'text-secondary',
-  waiting: 'text-danger',
-  ready: 'text-amber',
-  engaged: 'text-success',
-  fault: 'text-danger',
-};
-
-function renderRelayStatus(data) {
-  if (!paRelayStatus) return;
-  const state = data.state || 'idle';
-  const label = PA_RELAY_TEXT[state] || state;
-  paRelayStatus.innerHTML = `<span class="telemetry-dot me-2"></span>${label}`;
-  paRelayStatus.title = (state === 'fault' && data.fault_reason)
-    ? `${PA_RELAY_TITLE.fault}: ${data.fault_reason}`
-    : (PA_RELAY_TITLE[state] || label);
-  paRelayStatus.className = `small fw-semibold text-nowrap ms-auto ${PA_RELAY_CLASS[state] || 'text-secondary'}`;
-  paRelayEngageButton?.classList.toggle('d-none', state !== 'ready');
-  paRelayDisengageButton?.classList.toggle('d-none', state !== 'engaged' && state !== 'fault');
+// Spectrum-only advisory shown next to the signal summary. It has no role
+// in PTT relay availability or switching.
+function renderSpectrumAdvisory(data) {
+  spectrumLooksOk = Boolean(data.streaming && data.detector?.is_plateau);
+  let label = 'Spectrum: waiting for stream';
+  let title = 'Start the stream to check the local Pluto RX spectrum';
+  let statusClass = 'text-secondary';
+  if (data.streaming) {
+    if (!data.detector) {
+      label = 'Checking spectrum…';
+      title = 'Waiting for spectrum data';
+      statusClass = 'text-amber';
+    } else if (data.detector.is_plateau) {
+      label = 'Spectrum seems OK';
+      title = 'The local RX spectrum looks like a stable DVB-S2 signal';
+      statusClass = 'text-success';
+    } else {
+      label = 'Check spectrum';
+      title = data.detector.reason || 'The spectrum does not look stable';
+      statusClass = 'text-danger';
+    }
+  }
+  if (spectrumAdvisoryStatus) {
+    spectrumAdvisoryStatus.innerHTML = `<span class="telemetry-dot me-2"></span>${label}`;
+    spectrumAdvisoryStatus.title = title;
+    spectrumAdvisoryStatus.className = `small fw-semibold text-nowrap ms-auto ${statusClass}`;
+  }
 }
 
-async function fetchRelayStatus() {
-  if (!paRelayStatus) return;
+function renderPttButtons() {
+  const streamIsRunning = streamState === 'streaming';
+  paRelayEngageButton?.classList.toggle('d-none', !streamIsRunning || pttRelayEngaged);
+  paRelayDisengageButton?.classList.toggle('d-none', !pttRelayEngaged);
+}
+
+async function fetchPttRelayStatus() {
   try {
     const response = await fetch('/api/relay/status', { cache: 'no-store' });
     if (!response.ok) throw new Error('Relay status request failed');
-    renderRelayStatus(await response.json());
+    const data = await response.json();
+    pttRelayEngaged = Boolean(data.engaged);
+    renderPttButtons();
   } catch (_error) {
-    paRelayStatus.innerHTML = '<span class="telemetry-dot me-2"></span>PA: unavailable';
-    paRelayStatus.title = 'PA relay status unavailable';
-    paRelayStatus.className = 'small fw-semibold text-nowrap ms-auto text-secondary';
-    paRelayEngageButton?.classList.add('d-none');
-    paRelayDisengageButton?.classList.add('d-none');
+    pttRelayEngaged = false;
+    renderPttButtons();
+  }
+}
+
+async function fetchSpectrumStatus() {
+  try {
+    const response = await fetch('/api/spectrum/status', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Spectrum status request failed');
+    renderSpectrumAdvisory(await response.json());
+  } catch (_error) {
+    spectrumLooksOk = false;
+    if (spectrumAdvisoryStatus) {
+      spectrumAdvisoryStatus.innerHTML = '<span class="telemetry-dot me-2"></span>Spectrum status unavailable';
+      spectrumAdvisoryStatus.title = 'The spectrum status could not be loaded';
+      spectrumAdvisoryStatus.className = 'small fw-semibold text-nowrap ms-auto text-secondary';
+    }
   }
 }
 
 paRelayEngageButton?.addEventListener('click', async () => {
+  if (!spectrumLooksOk && !await showAppConfirm(
+    'Spectrum does not look OK',
+    'Are you sure you want to switch the PTT relay on?',
+    'Switch PTT relay ON')) {
+    return;
+  }
   paRelayEngageButton.disabled = true;
   try {
     const response = await fetch('/api/relay/engage', { method: 'POST' });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Could not engage PA relay');
+    if (!response.ok) throw new Error(result.error || 'Could not switch the PTT relay on');
   } catch (error) {
     showAppAlert(error.message);
   } finally {
     paRelayEngageButton.disabled = false;
-    await fetchRelayStatus();
+    await fetchPttRelayStatus();
   }
 });
 
@@ -335,12 +378,14 @@ paRelayDisengageButton?.addEventListener('click', async () => {
     // either way, and disengage is always safe to retry.
   } finally {
     paRelayDisengageButton.disabled = false;
-    await fetchRelayStatus();
+    await fetchPttRelayStatus();
   }
 });
 
-fetchRelayStatus();
-window.setInterval(fetchRelayStatus, 1000);
+fetchPttRelayStatus();
+fetchSpectrumStatus();
+window.setInterval(fetchPttRelayStatus, 1000);
+window.setInterval(fetchSpectrumStatus, 1000);
 
 const localFftCanvas = document.querySelector('#local-fft-canvas');
 const localFftStatus = document.querySelector('#local-fft-status');
@@ -418,9 +463,10 @@ function drawLocalFft(bins, spanHz, zoomSpanHz) {
 
   // Filled area under the trace, fading out towards the bottom - same
   // idea as the BATC spectrum panel's look.
+  const rgb = spectrumLooksOk ? '51, 209, 122' : '255, 51, 51';
   const gradient = localFftContext.createLinearGradient(0, 0, 0, height);
-  gradient.addColorStop(0, 'rgba(255, 51, 51, .35)');
-  gradient.addColorStop(1, 'rgba(255, 51, 51, 0)');
+  gradient.addColorStop(0, `rgba(${rgb}, .35)`);
+  gradient.addColorStop(1, `rgba(${rgb}, 0)`);
   localFftContext.beginPath();
   localFftContext.moveTo(points[0].x, height);
   for (const point of points) localFftContext.lineTo(point.x, point.y);
@@ -429,7 +475,7 @@ function drawLocalFft(bins, spanHz, zoomSpanHz) {
   localFftContext.fillStyle = gradient;
   localFftContext.fill();
 
-  localFftContext.strokeStyle = '#f33';
+  localFftContext.strokeStyle = `rgb(${rgb})`;
   localFftContext.lineWidth = 1.5;
   localFftContext.beginPath();
   points.forEach((point, i) => {
@@ -467,6 +513,9 @@ if (localFftCanvas) {
 const streamToggle = document.querySelector('#stream-toggle');
 const copyLogButton = document.querySelector('#copy-log-button');
 let streamState = 'stopped';
+// The engine keeps its last error until the next start, so only show it if
+// this page itself saw the start - not again on every refresh.
+let streamStartSeen = false;
 
 copyLogButton?.addEventListener('click', async () => {
   const text = document.querySelector('#stream-status-message')?.textContent || '';
@@ -518,6 +567,51 @@ const txMonitorInfo = txMonitor && window.createRxInfo ? window.createRxInfo({
   summary: document.querySelector('#tx-monitor-summary'),
 }) : null;
 let txMonitorShown = false;
+const txCalLabel = document.querySelector('#tx-monitor-txcal');
+const txCalApply = document.querySelector('#tx-monitor-txcal-apply');
+let txCalTimer = null;
+
+// "TX correction" line: the Pluto's TX error measured on our own signal
+// (app.py's _measure_tx()), applied from the next stream start on.
+async function refreshTxCalibration() {
+  try {
+    const response = await fetch('/api/tx/calibration', { cache: 'no-store' });
+    if (!response.ok) return;
+    const cal = await response.json();
+    const fmt = (khz) => (khz > 0 ? '+' : '') + khz + ' kHz';
+    let text = cal.status ? 'TX error: ' + cal.status.toLowerCase() : 'TX error: waiting for data…';
+    let canApply = false;
+    if (cal.suggested_khz !== null) {
+      if (cal.suggested_khz === cal.tx_correction_khz) {
+        text = 'TX correction ' + fmt(cal.tx_correction_khz) + ' ✓ confirmed';
+      } else {
+        text = 'TX error measured: correction ' + fmt(cal.suggested_khz)
+          + ' (now ' + fmt(cal.tx_correction_khz) + ')';
+        canApply = !cal.auto_apply;
+      }
+    }
+    txCalLabel.textContent = text;
+    txCalLabel.title = text;
+    txCalApply.classList.toggle('d-none', !canApply);
+  } catch (_error) {
+    // Next poll will tell.
+  }
+}
+
+txCalApply?.addEventListener('click', async () => {
+  txCalApply.disabled = true;
+  try {
+    const response = await fetch('/api/tx/calibration/apply', { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Request failed');
+    showAppAlert('TX correction set to ' + result.tx_correction_khz + ' kHz - used from the next stream start.');
+    await refreshTxCalibration();
+  } catch (error) {
+    showAppAlert(error.message);
+  } finally {
+    txCalApply.disabled = false;
+  }
+});
 
 function setTxMonitor(show) {
   if (!txMonitorPlayer || show === txMonitorShown) return;
@@ -530,9 +624,13 @@ function setTxMonitor(show) {
   if (show) {
     txMonitorPlayer.start();
     txMonitorInfo.start();
+    refreshTxCalibration();
+    txCalTimer = window.setInterval(refreshTxCalibration, 2000);
   } else {
     txMonitorPlayer.stop();
     txMonitorInfo.stop();
+    if (txCalTimer) window.clearInterval(txCalTimer);
+    txCalTimer = null;
   }
 }
 
@@ -549,6 +647,7 @@ function renderStreamButton(status) {
   if (!streamToggle) return;
   const previousStreamState = streamState;
   streamState = status.state;
+  renderPttButtons();
   setTxMonitor(status.state === 'streaming' || MONITOR_TEST);
   // Source can only be changed while fully stopped - switching source mid-
   // stream would need a pipeline restart (a brief RF dropout while the
@@ -561,10 +660,13 @@ function renderStreamButton(status) {
   if (status.state === 'stopped' && previousStreamState !== 'stopped') {
     resetTxGain();
   }
+  if (status.state === 'starting' || status.state === 'streaming') streamStartSeen = true;
+  if (status.state === 'stopped') streamStartSeen = false;
+  const hasErrorText = status.state === 'error' && !!status.last_error && streamStartSeen;
   const busy = status.state === 'starting' || status.state === 'stopping';
   streamToggle.disabled = busy;
-  streamToggle.classList.toggle('btn-success', status.state !== 'streaming' && status.state !== 'error');
-  streamToggle.classList.toggle('btn-danger', status.state === 'streaming' || status.state === 'error');
+  streamToggle.classList.toggle('btn-success', status.state !== 'streaming' && !hasErrorText);
+  streamToggle.classList.toggle('btn-danger', status.state === 'streaming' || hasErrorText);
   if (status.state === 'streaming') streamToggle.textContent = '■ Stop stream';
   else if (status.state === 'starting') streamToggle.textContent = 'Starting…';
   else if (status.state === 'stopping') streamToggle.textContent = 'Stopping…';
@@ -572,7 +674,6 @@ function renderStreamButton(status) {
   streamToggle.title = status.state === 'streaming' ? 'Transmitting via Pluto' : '';
 
   const statusMessage = document.querySelector('#stream-status-message');
-  const hasErrorText = status.state === 'error' && !!status.last_error;
   if (statusMessage) {
     statusMessage.classList.toggle('text-danger', hasErrorText);
     statusMessage.textContent = hasErrorText ? status.last_error : '';
@@ -602,6 +703,14 @@ streamToggle?.addEventListener('click', async () => {
         streamToggle.disabled = false;
         return;
       }
+      // Fresh check rather than the last telemetry poll, so a Pluto that
+      // just came back (or just dropped out) is seen straight away.
+      const telemetry = await fetch('/api/telemetry', { cache: 'no-store' }).then((r) => r.json()).catch(() => null);
+      if (!telemetry?.pluto_connected) {
+        showAppAlert('The Pluto is not online. Check that it is powered on and connected, then wait for "Pluto connected" at the top of the page.');
+        streamToggle.disabled = false;
+        return;
+      }
       const source = document.querySelector('input[name="source-type"]:checked')?.value;
       const body = {
         source,
@@ -622,6 +731,7 @@ streamToggle?.addEventListener('click', async () => {
         streamToggle.disabled = false;
         return;
       }
+      streamStartSeen = true;
       response = await fetch('/api/stream/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -631,6 +741,13 @@ streamToggle?.addEventListener('click', async () => {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Stream action failed');
     renderStreamButton(result);
+    if (result.state === 'streaming') {
+      renderPttButtons();
+      renderSpectrumAdvisory({ streaming: true, detector: null });
+    } else {
+      await fetchPttRelayStatus();
+      await fetchSpectrumStatus();
+    }
   } catch (error) {
     showAppAlert(error.message);
     await fetchStreamStatus();

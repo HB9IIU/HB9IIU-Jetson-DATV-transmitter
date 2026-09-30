@@ -1,4 +1,5 @@
 import glob
+import json
 import logging
 import os
 import re
@@ -32,6 +33,8 @@ import usb_video_key
 logging.getLogger("werkzeug").setLevel(logging.INFO)
 
 app = Flask(__name__)
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_info.json")) as app_info_file:
+    APP_INFO = json.load(app_info_file)
 
 
 @app.context_processor
@@ -45,11 +48,18 @@ def static_versioning():
         except OSError:
             version = 0
         return url_for("static", filename=filename, v=version)
-    return {"static_url": static_url}
+    return {
+        "static_url": static_url,
+        "app_version": APP_INFO["version"],
+        "github_url": APP_INFO["github_url"],
+    }
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 STREAM_ENGINE = DatvEngine(PROJECT_DIR)
 TESTCARD_DIR = os.path.join(PROJECT_DIR, "testcards")
+TESTCARD_PREVIEW_DIR = os.path.join(PROJECT_DIR, "static", "img", "testcard-previews")
 SBB_CLOCK_PREVIEW = os.path.join(PROJECT_DIR, "static", "img", "sbb_clock_preview.png")
+_TESTCARD_PREVIEW_LOCK = threading.Lock()
+_TESTCARD_SOURCE_SIGNATURES = {}
 # Matches templates/index.html's hardcoded <option selected> defaults for
 # #symbol-rate/#fec - used to pick which preprocessed_<W>x<H>/ folder to
 # show on first page load, before any SR/FEC change (see
@@ -58,6 +68,13 @@ DEFAULT_SYMBOL_RATE = 333
 DEFAULT_FEC = "3/4"
 PLUTO_IP = "192.168.2.1"
 PLUTO_MQTT_PORT = 1883
+# PlutoDVB2 normally publishes telemetry about once per second. Treat the
+# most recent valid message as the connection health signal and allow enough
+# time for Paho to recover from a missed keepalive or a briefly busy Pluto.
+# Without this grace period, on_disconnect() made the header flash red for a
+# single transient MQTT interruption even though the hardware never left.
+PLUTO_TELEMETRY_GRACE_SECONDS = 20.0
+PLUTO_MQTT_KEEPALIVE_SECONDS = 20
 pluto_callsign.init(PROJECT_DIR)
 # Loaded from pluto_callsign.json (falls back to pluto_callsign.DEFAULT_CALLSIGN
 # on first run) rather than a hardcoded literal, so a callsign set via the
@@ -212,7 +229,8 @@ def _start_pluto_telemetry():
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message
-    client.connect_async(PLUTO_IP, PLUTO_MQTT_PORT, keepalive=5)
+    client.connect_async(
+        PLUTO_IP, PLUTO_MQTT_PORT, keepalive=PLUTO_MQTT_KEEPALIVE_SECONDS)
     client.loop_start()
 
 
@@ -269,8 +287,8 @@ start_background_reader()
 usb_video_key.init(PROJECT_DIR)
 overlay_settings.init(PROJECT_DIR)
 opentuner_quicktune.init(PROJECT_DIR)
-# PA-relay safety interlock - see pa_relay.py's own docstring for the full
-# story. Getter callables rather than a direct import keep pa_relay.py from
+# Operator-controlled PTT relay - see pa_relay.py's own docstring for the
+# full story. Getter callables rather than a direct import keep pa_relay.py from
 # ever importing this module back (one-directional dependency).
 RELAY_CONTROLLER = pa_relay.RelayController(
     get_stream_state=lambda: STREAM_ENGINE.status()["state"],
@@ -354,19 +372,104 @@ def detect_audio_inputs():
     return devices
 
 
+def _sync_testcard_previews(source_names):
+    """Keep browser-sized JPEGs aligned with the real testcard folder.
+
+    Preview files are derived cache artifacts: changed/new sources are rebuilt
+    and previews without a source are removed. If ffmpeg is unavailable, the
+    caller safely falls back to serving the full source image.
+    """
+    global _TESTCARD_SOURCE_SIGNATURES
+    with _TESTCARD_PREVIEW_LOCK:
+        source_signatures = {}
+        for name in source_names:
+            source_path = os.path.join(TESTCARD_DIR, name)
+            stat = os.stat(source_path)
+            source_signatures[name] = (stat.st_mtime_ns, stat.st_size)
+
+        if source_signatures == _TESTCARD_SOURCE_SIGNATURES:
+            return
+
+        os.makedirs(TESTCARD_PREVIEW_DIR, exist_ok=True)
+        expected_previews = {
+            os.path.splitext(name)[0] + ".jpg" for name in source_names
+        }
+        for preview_name in os.listdir(TESTCARD_PREVIEW_DIR):
+            preview_path = os.path.join(TESTCARD_PREVIEW_DIR, preview_name)
+            if (preview_name.lower().endswith(".jpg") and
+                    preview_name not in expected_previews and
+                    os.path.isfile(preview_path)):
+                try:
+                    os.remove(preview_path)
+                except OSError:
+                    pass
+
+        ffmpeg = shutil.which("ffmpeg")
+        bundled_ffmpeg = os.path.join(PROJECT_DIR, "ffmpeg-static", "ffmpeg")
+        if not ffmpeg and os.path.isfile(bundled_ffmpeg):
+            ffmpeg = bundled_ffmpeg
+
+        for name in source_names:
+            if _TESTCARD_SOURCE_SIGNATURES.get(name) == source_signatures[name]:
+                continue
+            source_path = os.path.join(TESTCARD_DIR, name)
+            preview_name = os.path.splitext(name)[0] + ".jpg"
+            preview_path = os.path.join(TESTCARD_PREVIEW_DIR, preview_name)
+            temporary_path = preview_path + ".tmp.jpg"
+            if ffmpeg:
+                try:
+                    subprocess.run([
+                        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                        "-i", source_path,
+                        "-vf", "scale=480:270:force_original_aspect_ratio=decrease,"
+                               "pad=480:270:(ow-iw)/2:(oh-ih)/2",
+                        "-frames:v", "1", "-q:v", "4", temporary_path,
+                    ], check=True, timeout=10)
+                    os.replace(temporary_path, preview_path)
+                except (OSError, subprocess.SubprocessError):
+                    try:
+                        os.remove(temporary_path)
+                    except OSError:
+                        pass
+                    try:
+                        os.remove(preview_path)
+                    except OSError:
+                        pass
+            else:
+                # Correctness takes priority over optimization: never serve an
+                # old derived image when this system cannot rebuild it.
+                try:
+                    os.remove(preview_path)
+                except OSError:
+                    pass
+
+        _TESTCARD_SOURCE_SIGNATURES = source_signatures
+
+
 def detect_testcards():
     files = []
     if os.path.isdir(TESTCARD_DIR):
-        for name in sorted(os.listdir(TESTCARD_DIR)):
-            if name.lower().endswith((".png", ".jpg", ".jpeg")):
-                files.append({
-                    "value": name,
-                    "label": os.path.splitext(name)[0].replace("-", " ").replace("_", " ").title(),
-                    # Cache-buster for the preview URL (?v=...): previews are
-                    # cached for 12 h, so an image replaced or renamed under a
-                    # name used before would otherwise keep showing the old one.
-                    "version": int(os.path.getmtime(os.path.join(TESTCARD_DIR, name))),
-                })
+        source_names = sorted(
+            name for name in os.listdir(TESTCARD_DIR)
+            if name.lower().endswith((".png", ".jpg", ".jpeg"))
+        )
+        _sync_testcard_previews(source_names)
+        for name in source_names:
+            preview_name = os.path.splitext(name)[0] + ".jpg"
+            preview_path = os.path.join(TESTCARD_PREVIEW_DIR, preview_name)
+            files.append({
+                "value": name,
+                "label": os.path.splitext(name)[0].replace("-", " ").replace("_", " ").title(),
+                # Use a small browser-only copy when available. The full
+                # 1280x720 source remains untouched for transmission.
+                "preview_static": "img/testcard-previews/{}".format(preview_name)
+                if os.path.isfile(preview_path) else None,
+                # Cache-buster for the preview URL (?v=...): previews are
+                # cached for 12 h, so an image replaced or renamed under a
+                # name used before would otherwise keep showing the old one.
+                "version": int(os.path.getmtime(preview_path if os.path.isfile(preview_path)
+                                                 else os.path.join(TESTCARD_DIR, name))),
+            })
     # Last carousel entry: funnyClock's live SBB station clock - not an
     # image file, datv_engine.start_testcard() turns it into SOURCE "clock".
     # Previewed with a static still (static/img/sbb_clock_preview.png).
@@ -530,7 +633,10 @@ RX_INFO = {"data": None, "received": 0.0}
 BEACON_KHZ = opentuner_quicktune.QO100_BEACON_DOWNLINK_KHZ
 CALIBRATION_WINDOW_S = 10
 CALIBRATION_MIN_SAMPLES = 8
-CALIBRATION = {"requested": None, "samples": [], "since": 0.0, "last": 0.0}
+CALIBRATION = {"requested": None, "samples": [], "since": 0.0, "last": 0.0, "done_at": 0.0}
+# Set each time a beacon calibration window completes - stream start waits
+# on it when it first sends OpenTuner to the beacon (see _tune_opentuner()).
+BEACON_CALIBRATED = threading.Event()
 
 
 def _auto_calibrate(data):
@@ -539,7 +645,7 @@ def _auto_calibrate(data):
     offset_hz = data.get("carrier_offset_hz")
     symbol_rate = data.get("symbol_rate_ksps")
     now = time.time()
-    on_beacon = (settings["auto_calibrate"] and not settings["local_test"] and data.get("locked")
+    on_beacon = (settings["auto_calibrate"] and data.get("locked")
                  and isinstance(requested, (int, float)) and isinstance(offset_hz, (int, float))
                  and isinstance(symbol_rate, (int, float)) and 1400 <= symbol_rate <= 1600
                  and abs(requested - BEACON_KHZ) <= 300)
@@ -555,12 +661,101 @@ def _auto_calibrate(data):
             or len(CALIBRATION["samples"]) < CALIBRATION_MIN_SAMPLES):
         return
     average_khz = sum(CALIBRATION["samples"]) / len(CALIBRATION["samples"]) / 1000.0
-    CALIBRATION.update(samples=[], since=now)
+    CALIBRATION.update(samples=[], since=now, done_at=now)
     correction = int(round(requested - BEACON_KHZ + average_khz))
     if abs(correction - settings["rx_correction_khz"]) >= 1:
-        opentuner_quicktune.set_rx_correction(correction)
+        opentuner_quicktune.update(rx_correction_khz=correction)
         app.logger.info("Beacon auto-calibration: LNB correction %+d -> %+d kHz",
                         settings["rx_correction_khz"], correction)
+    BEACON_CALIBRATED.set()
+
+
+# Pluto TX error, measured on our own signal while transmitting: with the
+# receive side freshly calibrated on the beacon (and QO-100's transponder
+# converting with a precise reference), any offset left on our own downlink
+# is the Pluto's. Measured once the offset has been stable (within
+# TX_STABLE_SPREAD_HZ) for TX_STABLE_S - not after a fixed warm-up time: the
+# Pluto is already warm from its always-on receiver. Every sample is logged
+# to TX_OFFSET_LOG so we can see how the Pluto really drifts.
+BEACON_CAL_MAX_AGE_S = 15 * 60
+# First real sessions (2026-09-29): the offset crept from -25 to -28.8 kHz
+# over ~80 s of TX, so 30 s / 1 kHz accepted a value taken mid-drift.
+TX_STABLE_S = 60
+TX_STABLE_SPREAD_HZ = 500
+TX_MIN_MARGIN_DB = 2.0
+# A real Pluto error is tens of kHz. Same day OpenTuner, tuned to our
+# frequency, locked a neighbour 467 kHz away ("G0DQH-James") and it was
+# measured as if it were ours - hence also the service name check below.
+TX_MAX_OFFSET_HZ = 100000
+TX_OFFSET_LOG = os.path.join(PROJECT_DIR, "tx_offset_log.csv")
+TX_CAL = {"started_at": None, "nominal_hz": None, "corr_at_start": 0, "samples": [],
+          "suggested_khz": None, "measured_at": None, "status": ""}
+
+
+def _log_tx_offset(now, offset_hz, margin, settings):
+    new_file = not os.path.exists(TX_OFFSET_LOG)
+    with open(TX_OFFSET_LOG, "a") as log_file:
+        if new_file:
+            log_file.write("time,seconds_since_tx_start,carrier_offset_hz,db_margin,"
+                           "tx_correction_khz,rx_correction_khz\n")
+        log_file.write("{},{:.0f},{},{},{},{}\n".format(
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            now - TX_CAL["started_at"], offset_hz, margin,
+            TX_CAL["corr_at_start"], settings["rx_correction_khz"]))
+
+
+def _measure_tx(data):
+    now = time.time()
+    if TX_CAL["started_at"] is None or STREAM_ENGINE.status()["state"] != "streaming":
+        TX_CAL["samples"] = []
+        return
+    settings = opentuner_quicktune.load()
+    if now - CALIBRATION["done_at"] > BEACON_CAL_MAX_AGE_S:
+        TX_CAL.update(samples=[], status="Waiting for a fresh beacon calibration")
+        return
+    nominal_down_khz = (int(round(TX_CAL["nominal_hz"] / 1000.0))
+                        + opentuner_quicktune.QO100_DOWNLINK_OFFSET_KHZ)
+    requested = data.get("requested_freq_khz")
+    offset_hz = data.get("carrier_offset_hz")
+    margin = data.get("db_margin")
+    if not (data.get("locked") and isinstance(requested, (int, float))
+            and isinstance(offset_hz, (int, float)) and isinstance(margin, (int, float))
+            and margin >= TX_MIN_MARGIN_DB
+            and abs(requested - (nominal_down_khz + settings["rx_correction_khz"])) <= 5):
+        TX_CAL.update(samples=[], status="Waiting for a solid lock on our own signal")
+        return
+    # Tuned to our frequency isn't enough - it must be OUR signal: our
+    # stream always carries the callsign as its service name.
+    if (str(data.get("service_name") or "").strip().upper() != PLUTO_CALLSIGN.upper()
+            or abs(offset_hz) > TX_MAX_OFFSET_HZ):
+        TX_CAL.update(samples=[], status="Locked on another station ({}), not ours".format(
+            data.get("service_name") or "unknown"))
+        return
+    _log_tx_offset(now, offset_hz, margin, settings)
+    samples = TX_CAL["samples"]
+    samples.append((now, offset_hz))
+    # Keep only the latest stretch that stays within the spread limit - its
+    # length is how long the offset has been stable.
+    while len(samples) > 1 and (max(o for _, o in samples) - min(o for _, o in samples)
+                                > TX_STABLE_SPREAD_HZ):
+        samples.pop(0)
+    while samples and now - samples[0][0] > TX_STABLE_S:
+        samples.pop(0)
+    stable_s = now - samples[0][0]
+    if stable_s < TX_STABLE_S - 3:
+        TX_CAL["status"] = "Measuring - stable for {:.0f} of {} s".format(stable_s, TX_STABLE_S)
+        return
+    average_khz = sum(o for _, o in samples) / len(samples) / 1000.0
+    # Our signal's real downlink = requested - LNB correction + offset. The
+    # Pluto was sent nominal - corr_at_start, so its error is that miss plus
+    # the correction already applied.
+    miss_khz = requested - settings["rx_correction_khz"] + average_khz - nominal_down_khz
+    suggested = int(round(miss_khz + TX_CAL["corr_at_start"]))
+    TX_CAL.update(suggested_khz=suggested, measured_at=now, status="Measured")
+    if settings["tx_auto_apply"] and suggested != settings["tx_correction_khz"]:
+        opentuner_quicktune.update(tx_correction_khz=suggested)
+        app.logger.info("TX auto-calibration: TX correction %+d -> %+d kHz",
+                        settings["tx_correction_khz"], suggested)
 
 
 @app.route("/api/rx/info", methods=["POST"])
@@ -573,9 +768,33 @@ def rx_info_post():
     RX_INFO["received"] = time.time()
     try:
         _auto_calibrate(data)
+        _measure_tx(data)
     except (ValueError, TypeError, OSError) as exc:
-        app.logger.warning("Beacon auto-calibration skipped: %s", exc)
+        app.logger.warning("Auto-calibration skipped: %s", exc)
     return "", 204
+
+
+@app.route("/api/tx/calibration")
+def tx_calibration_get():
+    """For the On-air monitor's "TX correction" line."""
+    settings = opentuner_quicktune.load()
+    return jsonify({
+        "status": TX_CAL["status"],
+        "suggested_khz": TX_CAL["suggested_khz"],
+        "measured_age_s": round(time.time() - TX_CAL["measured_at"]) if TX_CAL["measured_at"] else None,
+        "tx_correction_khz": settings["tx_correction_khz"],
+        "auto_apply": settings["tx_auto_apply"],
+    })
+
+
+@app.route("/api/tx/calibration/apply", methods=["POST"])
+def tx_calibration_apply():
+    """Stores the latest measurement - used from the next stream start on."""
+    if TX_CAL["suggested_khz"] is None:
+        return jsonify({"error": "Nothing measured yet"}), 409
+    saved = opentuner_quicktune.update(tx_correction_khz=TX_CAL["suggested_khz"])
+    app.logger.info("TX correction set to %+d kHz", saved["tx_correction_khz"])
+    return jsonify({"tx_correction_khz": saved["tx_correction_khz"]})
 
 
 @app.route("/api/rx/info")
@@ -586,7 +805,7 @@ def rx_info_get():
     # OpenTuner reports what it was asked to tune to, which includes our LNB
     # frequency correction - show the station's real frequency instead.
     settings = opentuner_quicktune.load()
-    if isinstance(info.get("requested_freq_khz"), (int, float)) and not settings["local_test"]:
+    if isinstance(info.get("requested_freq_khz"), (int, float)):
         info["requested_freq_khz"] -= settings["rx_correction_khz"]
     return jsonify(info)
 
@@ -660,17 +879,18 @@ def opentuner_settings_post():
             data.get("target_ip", ""),
             data.get("port", opentuner_quicktune.DEFAULTS["port"]),
             data.get("lnb_offset_khz", opentuner_quicktune.DEFAULTS["lnb_offset_khz"]),
-            data.get("local_test", False),
-            data.get("local_correction_khz", 0),
             data.get("rx_correction_khz", 0),
             data.get("auto_calibrate", True),
+            data.get("tx_correction_khz", 0),
+            data.get("tx_auto_apply", False),
         )
     except (ValueError, TypeError, OSError) as exc:
         return jsonify({"error": "Invalid setting: {}".format(exc)}), 400
     # Already on air: re-tune now (e.g. local test just switched on) rather
     # than only at the next stream start.
-    if STREAM_ENGINE.status()["state"] == "streaming" and CURRENT_TX_FREQUENCY_HZ:
-        _tune_opentuner(CURRENT_TX_FREQUENCY_HZ, CURRENT_SYMBOL_RATE_KSPS or DEFAULT_SYMBOL_RATE)
+    if STREAM_ENGINE.status()["state"] == "streaming" and TX_CAL["nominal_hz"]:
+        _tune_opentuner(TX_CAL["nominal_hz"], CURRENT_SYMBOL_RATE_KSPS or DEFAULT_SYMBOL_RATE,
+                        beacon_first=False)
     return jsonify(saved)
 
 
@@ -705,16 +925,40 @@ def opentuner_tune():
     return jsonify({"message": message, "destination": "{}:{}".format(*destination)})
 
 
-def _tune_opentuner(frequency_hz, symbol_rate):
-    """Best effort - a failed tune message must never block a stream start."""
-    settings = opentuner_quicktune.load()
-    if not settings["enabled"]:
-        return
+def _send_opentuner_tune(frequency_hz, symbol_rate):
     try:
-        message, destination = opentuner_quicktune.send_tune(frequency_hz, symbol_rate, settings)
+        message, destination = opentuner_quicktune.send_tune(frequency_hz, symbol_rate)
         app.logger.info("OpenTuner Quick Tune -> %s:%s %s", destination[0], destination[1], message)
     except OSError as exc:
         app.logger.warning("OpenTuner Quick Tune send failed: %s", exc)
+
+
+def _beacon_then_tune(frequency_hz, symbol_rate):
+    """Stream start with a stale beacon calibration: calibrate first (so the
+    TX measurement has a trustworthy receive side), then our own signal."""
+    BEACON_CALIBRATED.clear()
+    try:
+        opentuner_quicktune.send_beacon()
+        app.logger.info("OpenTuner: calibrating on the beacon before tuning to our signal")
+    except OSError as exc:
+        app.logger.warning("OpenTuner beacon tune failed: %s", exc)
+    BEACON_CALIBRATED.wait(timeout=40)
+    if STREAM_ENGINE.status()["state"] == "streaming":
+        _send_opentuner_tune(frequency_hz, symbol_rate)
+
+
+def _tune_opentuner(frequency_hz, symbol_rate, beacon_first=True):
+    """Best effort - a failed tune message must never block a stream start.
+    frequency_hz is the intended (nominal) uplink, without TX correction."""
+    settings = opentuner_quicktune.load()
+    if not settings["enabled"]:
+        return
+    stale = time.time() - CALIBRATION["done_at"] > BEACON_CAL_MAX_AGE_S
+    if beacon_first and stale and settings["auto_calibrate"]:
+        threading.Thread(target=_beacon_then_tune, args=(frequency_hz, symbol_rate),
+                         daemon=True).start()
+    else:
+        _send_opentuner_tune(frequency_hz, symbol_rate)
 
 
 @app.route("/api/stream/status")
@@ -757,6 +1001,11 @@ def stream_start():
         # value set by static/js/batc-spectrum.js's green-slot click
         # handler) - convert to whole Hz for the rest of the stack.
         frequency_hz = round(float(data.get("frequency")) * 1e6)
+        # The Pluto gets the frequency minus its measured error, so the
+        # signal lands exactly in the chosen slot (see _measure_tx()).
+        # frequency_hz stays the intended one - OpenTuner tunes to that.
+        tx_correction_khz = opentuner_quicktune.load()["tx_correction_khz"]
+        pluto_frequency_hz = frequency_hz - tx_correction_khz * 1000
         # Banner/marquee on/off + marquee text come from the Setup page
         # (overlay_settings.py), not this request body - camera/video are
         # the only sources that use them (testcard never asks).
@@ -772,13 +1021,13 @@ def stream_start():
             if testcard not in {item["value"] for item in detect_testcards()}:
                 return jsonify({"error": "Select a valid testcard"}), 400
             status_data = STREAM_ENGINE.start_testcard(
-                testcard, symbol_rate, fec, gain_db, frequency_hz, PLUTO_CALLSIGN)
+                testcard, symbol_rate, fec, gain_db, pluto_frequency_hz, PLUTO_CALLSIGN)
         elif source == "camera":
             camera_device = data.get("camera_device", "")
             audio_device = data.get("audio_device", "")
             status_data = STREAM_ENGINE.start_camera(
                 camera_device, is_csi_camera(camera_device), audio_device,
-                symbol_rate, fec, gain_db, frequency_hz, top_banner, top_banner_text,
+                symbol_rate, fec, gain_db, pluto_frequency_hz, top_banner, top_banner_text,
                 bottom_banner, marquee, marquee_text, PLUTO_CALLSIGN)
         elif source == "video":
             requested_video = data.get("video", "")
@@ -791,7 +1040,7 @@ def stream_start():
             video_path = os.path.join(
                 selected_video["root_dir"], selected_video["folder"], selected_video["file"])
             status_data = STREAM_ENGINE.start_video(
-                video_path, symbol_rate, fec, gain_db, frequency_hz,
+                video_path, symbol_rate, fec, gain_db, pluto_frequency_hz,
                 top_banner, top_banner_text, bottom_banner, marquee, marquee_text, PLUTO_CALLSIGN)
         else:
             return jsonify({"error": "Unknown source"}), 400
@@ -807,7 +1056,11 @@ def stream_start():
         return jsonify({"error": str(exc)}), 409
     global CURRENT_SYMBOL_RATE_KSPS
     CURRENT_SYMBOL_RATE_KSPS = symbol_rate
-    set_pluto_rx_fft(True, frequency_hz)
+    # The Pluto's own receiver shares its TX crystal, so it sees its signal
+    # exactly where it was told to transmit - centre its spectrum there.
+    set_pluto_rx_fft(True, pluto_frequency_hz)
+    TX_CAL.update(started_at=time.time(), nominal_hz=frequency_hz, corr_at_start=tx_correction_khz,
+                  samples=[], suggested_khz=None, measured_at=None, status="")
     _tune_opentuner(frequency_hz, symbol_rate)
     return jsonify(status_data), 202
 
@@ -819,6 +1072,7 @@ def stream_stop():
     # this same request rather than waiting for the next monitor tick.
     RELAY_CONTROLLER.force_disengage_and_idle()
     set_pluto_rx_fft(False)
+    TX_CAL["started_at"] = None
     return jsonify(STREAM_ENGINE.stop())
 
 
@@ -848,20 +1102,29 @@ def app_restart():
 
 @app.route("/api/relay/status")
 def relay_status():
-    return jsonify(RELAY_CONTROLLER.status())
+    status = RELAY_CONTROLLER.status()
+    return jsonify({
+        "engaged": status["engaged"],
+        "fault_reason": status["fault_reason"],
+    })
+
+
+@app.route("/api/spectrum/status")
+def spectrum_status():
+    status = RELAY_CONTROLLER.status()
+    return jsonify({
+        "streaming": status["streaming"],
+        "detector": status["detector"],
+    })
 
 
 @app.route("/api/relay/engage", methods=["POST"])
 def relay_engage():
-    """Operator confirmation that it's safe to power the CN0417 pre-amp -
-    only succeeds once RELAY_CONTROLLER has independently decided the local
-    Pluto RX spectrum has held a stable plateau (state == "ready"). See
-    pa_relay.py's docstring - this is a deliberate human-in-the-loop gate
-    on top of the automatic detector, not a rubber stamp."""
+    """Switch on the PTT relay at the operator's request while streaming."""
     ok, state = RELAY_CONTROLLER.request_engage()
     if not ok:
         return jsonify({
-            "error": "Relay not ready to engage (state: {})".format(state),
+            "error": "PTT relay cannot be switched on while the stream is {}".format(state),
             "state": state,
         }), 409
     return jsonify({"state": state}), 202
@@ -949,8 +1212,14 @@ def telemetry():
         pluto_temperature = float(PLUTO_TELEMETRY.get("temperature_ad")) / 1000.0
     except (TypeError, ValueError):
         pass
-    connected = (PLUTO_STATE["connected"] and
-                 time.time() - PLUTO_STATE["last_message"] < 10.0)
+    # Do not expose Paho's instantaneous socket state directly. A missed
+    # keepalive calls on_disconnect() before its automatic reconnect finishes,
+    # which used to make a healthy Pluto flicker online/offline in the UI.
+    # Fresh device telemetry proves that the Pluto was reachable recently and
+    # provides a stable status while that brief reconnect happens.
+    last_message = PLUTO_STATE["last_message"]
+    connected = (last_message > 0.0 and
+                 time.time() - last_message < PLUTO_TELEMETRY_GRACE_SECONDS)
     return jsonify({
         "jetson_cpu_temp_c": read_cpu_temperature(),
         "jetson_cpu_load_percent": read_cpu_load(),
