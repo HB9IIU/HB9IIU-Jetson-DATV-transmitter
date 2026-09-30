@@ -27,7 +27,9 @@ Evariste's (F5OEO) PlutoDVB2 firmware, does the DVB-S2 modulation.
   connected to the Jetson by USB
 - **Network connection** for the Jetson (the BATC spectrum comes from the internet)
 - **Your QO-100 uplink**: amplifier, dish, feed
-- **A receiver** to watch your own signal, e.g. MiniTioune or OpenTuner
+- **A receiver** to watch your own signal, e.g. a MiniTiouner with the
+  [modified OpenTuner](https://github.com/HB9IIU/HB9IIU-Jetson-DATV-OpenTuner)
+  (see [Receiving with OpenTuner](#receiving-with-opentuner-optional))
 - Optional: a **USB webcam** (tested with a Logitech C920), a **USB stick** for
   your own videos, and a **relay module** for the PA (see below)
 - An **amateur radio licence** that allows you to transmit on QO-100
@@ -71,6 +73,11 @@ The image uses 20 GB of the card. On a bigger card the rest stays unused
   browser. The Jetson converts it for DATV (this takes about as long as the
   video itself).
 - **Optional PA relay** that keeps your amplifier off while the Pluto starts up
+- **RX page and On-air monitor** (optional, with OpenTuner): watch QO-100 in
+  the browser, click a signal to tune, and see your own signal come back
+  through the satellite while you transmit
+- **Frequency correction**: LNB error calibrated on the beacon, and the
+  Pluto's TX error measured on your own signal
 - Runs as a service: switch on the Jetson and the web page is there
 
 ## Transmission settings
@@ -110,6 +117,35 @@ itself when you stop or when the stream ends.
 > naming. The pin only gives a few milliamps. Use a relay module with a
 > 3.3 V logic input, never a bare relay coil.
 
+## Receiving with OpenTuner (optional)
+
+![RX: watch QO-100 in the browser](docs/slide7_rx_opentuner.png)
+
+With a **MiniTiouner** and the
+[modified OpenTuner](https://github.com/HB9IIU/HB9IIU-Jetson-DATV-OpenTuner)
+on a Windows PC, the Jetson can tune the receiver and show what it receives:
+
+- **RX page**: click any signal on the BATC spectrum to tune OpenTuner. The
+  received video plays in the browser, with margin, MER, MODCOD and service name.
+- **Auto-tune on TX**: every time you start a stream, OpenTuner is tuned to
+  your own signal.
+- **On-air monitor**: while you transmit, card 1 on the Home page shows your
+  own picture received back through QO-100, with margin and MER.
+- **Beacon auto-calibration**: while OpenTuner is locked on the beacon, the
+  LNB frequency error is measured and followed by itself.
+- **TX frequency correction**: the Pluto's own frequency error is measured on
+  your signal and applied from the next start, so you land in the slot.
+
+Setting it up:
+
+1. Install the modified OpenTuner on a Windows PC on the same network as the Jetson.
+2. Under **Extra Features**, enable **Quick Tune Control**.
+3. Enable **Jetson Stream** and enter the Jetson's IP address and port **5001**.
+4. On the Jetson's **Setup** page, in the **OpenTuner** section, enable
+   **Auto-tune on stream start**. The defaults are UDP port **6789** and LNB
+   offset **9750000 kHz**.
+5. Press **Save**, then **Test: tune to beacon**. OpenTuner should lock on the beacon.
+
 ## Good manners on QO-100
 
 - Only use free (green) channels.
@@ -139,6 +175,7 @@ The SD card image is the easy way. If you want to work on the code:
 | `datv_tx_plus.py` | GStreamer pipelines, Pluto setup, overlays |
 | `dvbs2_profiles.py` | Symbol rate / FEC / bitrate table |
 | `pa_relay.py`, `pa_relay_gpio.py`, `pluto_signal_stability.py` | PA relay logic |
+| `opentuner_quicktune.py`, `rx_relay.py` | OpenTuner tuning and RX video relay |
 | `fileUploader/` | Video Library: upload and conversion |
 | `testcards/` | Testcard pictures |
 | `tuning/` | Tools used to measure the safe bitrates |
@@ -151,6 +188,7 @@ The SD card image is the easy way. If you want to work on the code:
 - **Evariste F5OEO** for the PlutoDVB2 firmware, which makes all of this possible
 - **[DATV-Red](https://github.com/Psynosaur/DATV-Red)**, whose source showed
   how to control the PlutoDVB2 firmware over MQTT
+- **Tom ZR6TG** for OpenTuner, the base of the modified receiver software
 - **BATC** for the QO-100 wideband spectrum monitor
 - **AMSAT-DL** and everyone who keeps QO-100 running
 
