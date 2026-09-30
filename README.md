@@ -12,9 +12,7 @@ spectrum, and press Start.
 The Jetson's hardware H.265 encoder does the hard work. The Pluto, running
 Evariste's (F5OEO) PlutoDVB2 firmware, does the DVB-S2 modulation.
 
-```
-[camera / testcard / video] -> [Jetson: H.265 + AAC, MPEG-TS] -> [Pluto: DVB-S2] -> [your upconverter / PA] -> QO-100
-```
+![Camera / testcard / video → Jetson (H.265 + AAC, MPEG-TS) → Pluto (DVB-S2) → your upconverter / PA → QO-100](docs/flow_diagram.png)
 
 ## What you need
 
