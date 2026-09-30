@@ -2,7 +2,7 @@
 
 **Got a Jetson Nano 2GB in a drawer? Turn it into a QO-100 DATV transmitter.**
 
-![Got a Jetson Nano 2GB in a drawer?](docs/slide2_drawer.png)
+![Turn an unused Jetson Nano into a DATV transmitter](docs/slide2_drawer.png)
 
 This project turns an NVIDIA Jetson Nano 2GB and an ADALM-Pluto into a
 complete DVB-S2 transmitter for the QO-100 wideband transponder. Everything is
@@ -57,6 +57,8 @@ The image uses 20 GB of the card. On a bigger card the rest stays unused
 (you can grow the partition later with GParted).
 
 ## Features
+
+![Home: three steps to air](docs/slide4_home.png)
 
 - **Three sources**
   - **Testcard**: still test pictures with a short melody, plus a live
