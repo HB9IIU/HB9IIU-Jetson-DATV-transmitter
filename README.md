@@ -154,35 +154,6 @@ Setting it up:
 - Keep test transmissions short.
 - Make sure your callsign is set correctly. It is shown in the picture.
 
-## Running from source
-
-The SD card image is the easy way. If you want to work on the code:
-
-- The app lives in `~/jetson-stream-panel` on the Jetson, with a Python
-  virtual environment in `.venv`.
-- `app.py` is the web app (port 80). `fileUploader/` is the Video Library
-  (port 8088).
-- The systemd units in `system/` start both at boot. Each file explains how
-  to install it.
-- Logs: `journalctl -u datv-app -f` and `journalctl -u datv-fileuploader -f`
-
-### Repository layout
-
-| Path | What it is |
-|---|---|
-| `app.py`, `templates/`, `static/` | Web app |
-| `datv_engine.py`, `datv_web_worker.py` | Starts and stops a transmission |
-| `datv_tx_plus.py` | GStreamer pipelines, Pluto setup, overlays |
-| `dvbs2_profiles.py` | Symbol rate / FEC / bitrate table |
-| `pa_relay.py`, `pa_relay_gpio.py`, `pluto_signal_stability.py` | PA relay logic |
-| `opentuner_quicktune.py`, `rx_relay.py` | OpenTuner tuning and RX video relay |
-| `fileUploader/` | Video Library: upload and conversion |
-| `testcards/` | Testcard pictures |
-| `tuning/` | Tools used to measure the safe bitrates |
-| `tools/` | Stand-alone Pluto diagnostics |
-| `system/` | systemd services and USB stick automount |
-| `tests/` | Unit tests |
-
 ## Credits
 
 - **Evariste F5OEO** for the PlutoDVB2 firmware, which makes all of this possible
