@@ -98,10 +98,10 @@ when reception is difficult.
 
 The Pluto can send short **full-power spikes** while it starts up or is
 reconfigured, whatever the power setting. These can damage a driver or PA.
-The relay output keeps the PA off until the Pluto's signal is clean and
-stable, and only switches on when you press *Engage PA relay*. It drops out
-by itself when you stop, when the stream ends, or when the signal becomes
-unstable.
+The relay output keeps the PA off until you press *Switch PTT relay ON*
+while a stream is running - wait until the local Pluto RX spectrum looks
+stable first (its status is advice only; you decide). It switches off by
+itself when you stop or when the stream ends.
 
 - Output: **physical pin 18** of the Jetson's 40-pin header (ground on e.g. pin 20)
 - Engaged = 3.3 V, off = 0 V
