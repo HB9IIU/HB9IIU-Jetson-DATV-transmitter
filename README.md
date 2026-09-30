@@ -37,7 +37,7 @@ Evariste's (F5OEO) PlutoDVB2 firmware, does the DVB-S2 modulation.
 ![Get the SD card image](docs/slide3_sd_card_image.png)
 
 1. **Download** the image `jetson.img.xz` (about 5 GB):
-   [Google Drive](https://drive.google.com/file/d/1KOO9mWcRhIP5yVT3PENrq5p7Ek5pGANZ/view?usp=sharing)
+   [Google Drive](https://drive.google.com/file/d/16irUuJwIsD3qBjyrr6gruCq_SNds_l53/view?usp=sharing)
 2. **Flash** it with [Raspberry Pi Imager](https://www.raspberrypi.com/software/):
    *Choose OS → Use custom → jetson.img.xz* (no need to unzip), choose the card, *Write*.
    Tested and working on a 32 GB card. (balenaEtcher failed during validation
