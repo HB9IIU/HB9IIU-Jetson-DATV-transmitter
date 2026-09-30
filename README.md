@@ -115,8 +115,8 @@ itself when you stop or when the stream ends.
 - Output: **physical pin 18** of the Jetson's 40-pin header (ground on e.g. pin 20)
 - Engaged = 3.3 V, off = 0 V
 
-> ⚠️ Pin 18 is the **physical pin number**, not "GPIO18" in Raspberry Pi
-> naming. The pin only gives a few milliamps. Use a relay module with a
+> ⚠️ Pin 18 is the **physical pin number** on the Jetson's 40-pin header,
+> not "GPIO18". The pin only gives a few milliamps. Use a relay module with a
 > 3.3 V logic input, never a bare relay coil.
 
 ## Receiving with OpenTuner (optional)
