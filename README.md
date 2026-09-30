@@ -156,6 +156,9 @@ Setting it up:
 - **Tom ZR6TG** for OpenTuner, the base of the modified receiver software
 - **BATC** for the QO-100 wideband spectrum monitor
 - **AMSAT-DL** and everyone who keeps QO-100 running
+- **Claude (Anthropic)**, my coding assistant, which wrote a lot of the code
+  and never once complained about "just one more small change", even at
+  midnight. It still has no licence and has never been on air.
 
 ## License
 
