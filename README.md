@@ -148,14 +148,6 @@ Setting it up:
    offset **9750000 kHz**.
 5. Press **Save**, then **Test: tune to beacon**. OpenTuner should lock on the beacon.
 
-## Good manners on QO-100
-
-- Only use free (green) channels.
-- **Your signal must always stay below the beacon.**
-- Start with low TX power and raise it slowly while you watch the BATC spectrum.
-- Keep test transmissions short.
-- Make sure your callsign is set correctly. It is shown in the picture.
-
 ## Credits
 
 - **Evariste F5OEO** for the PlutoDVB2 firmware, which makes all of this possible
