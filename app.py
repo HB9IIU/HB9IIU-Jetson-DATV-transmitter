@@ -23,6 +23,7 @@ import opentuner_quicktune
 import overlay_settings
 import pa_relay
 import pluto_callsign
+import station_locator
 import rx_relay
 import usb_video_key
 
@@ -91,6 +92,7 @@ PLUTO_CALLSIGN = pluto_callsign.load()
 # mqtt_setcall.sh in the firmware source), so it's worth keeping simple/safe
 # rather than accepting the full range of real-world callsign formats.
 PLUTO_CALLSIGN_RE = re.compile(r"^[A-Z0-9]{3,10}$")
+station_locator.init(PROJECT_DIR)
 # Fallback only, used before any stream has been started - the RX WebFFT is
 # centred on our own real, live TX frequency (CURRENT_TX_FREQUENCY_HZ,
 # set by stream_start()) to visually confirm real RF is going out (see
@@ -1001,6 +1003,12 @@ def stream_start():
         # value set by static/js/batc-spectrum.js's green-slot click
         # handler) - convert to whole Hz for the rest of the stack.
         frequency_hz = round(float(data.get("frequency")) * 1e6)
+        # Bandplan: above 10497.0 MHz downlink (2407.5 MHz uplink) is narrow
+        # DATV only - SR 500 may go up to the 2407.25 slot (same rule as
+        # static/js/batc-spectrum.js's SR500_MAX_CENTER).
+        if symbol_rate >= 500 and frequency_hz > 2407250000:
+            return jsonify({"error": "SR 500 is not allowed above 10496.75 MHz "
+                            "(bandplan: narrow DATV only) - pick a lower slot or SR 333"}), 400
         # The Pluto gets the frequency minus its measured error, so the
         # signal lands exactly in the chosen slot (see _measure_tx()).
         # frequency_hz stays the intended one - OpenTuner tunes to that.
@@ -1203,6 +1211,23 @@ def pluto_callsign_set():
     # "connected" for a few seconds even though the Pluto is rebooting.
     PLUTO_STATE["last_message"] = 0.0
     return jsonify({"callsign": PLUTO_CALLSIGN})
+
+
+@app.route("/api/locator")
+def locator_get():
+    return jsonify({"locator": station_locator.load()})
+
+
+@app.route("/api/locator", methods=["POST"])
+def locator_set():
+    """QRA locator shown on the SBB clock - read by datv_tx_plus.py's
+    load_funny_clock() at each clock stream start, so no restart needed."""
+    data = request.get_json(silent=True) or {}
+    locator = station_locator.normalize(data.get("locator", ""))
+    if not locator:
+        return jsonify({"error": "Locator must be 4 or 6 characters, e.g. JN36 or JN36kl"}), 400
+    station_locator.save(locator)
+    return jsonify({"locator": locator})
 
 
 @app.route("/api/telemetry")

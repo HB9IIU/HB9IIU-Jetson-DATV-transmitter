@@ -522,6 +522,16 @@ TESTCARD_AUDIO_DELAY_SECONDS = 1.0
 # (confirmed on real hardware/receiver on 2026-09-06). Must be bigger than
 # TELEMETRY_UPDATE_SECONDS so the poll loop always catches it in time.
 VIDEO_END_MARGIN_SECONDS = 3.0
+# When SOURCE == "video": start the file again when it ends instead of
+# stopping (asked for by ON1AVO, 2026-10-01). ffmpeg reads the file in a
+# loop and pipes it in as one endless stream (start_video_loop_reader()),
+# so GStreamer never seeks. Seeking inside the pipeline was tried first
+# (non-flushing SEGMENT seeks, 2026-10-02): PTS stayed clean but the
+# encoder's DTS broke at the first jump back - and the old testcard
+# soundtrack loop's flushing seek had corrupted the mux before that.
+VIDEO_LOOP = True
+# Set in main(): the pipe read end of start_video_loop_reader()'s ffmpeg.
+VIDEO_LOOP_FD = None
 TS_BITRATE_WAIT_SECONDS = 30.0
 PLUTO_CONFIG_RETRY_SECONDS = 2.0
 CBR_RELAY_PORT = 18282
@@ -536,6 +546,13 @@ CBR_RELAY_PORT = 18282
 # 0.7, 0 at 1.0 (live had 2182 at 0.5 - so oversized keyframes, not live
 # timing). The tuner's benchmark clip was clean at 0.5, i.e. too easy.
 CBR_MUXDELAY_SECONDS = 1.0
+# The relay prefers a static ffmpeg build in ffmpeg-static/ over the system
+# one: the Jetson's ffmpeg 3.4 asks for -pcr_period 20 / -pat_period 0.4 but
+# still leaves gaps up to ~72 ms PCR / ~560 ms PAT-PMT, failing TR 101 290
+# (reported by ON1AVO, 2026-10-01). The same input through a static 7.0.2
+# arm64 build stayed at max 28 ms / 404 ms (2026-10-02).
+_STATIC_FFMPEG = os.path.join(SCRIPT_DIR, "ffmpeg-static", "ffmpeg")
+CBR_RELAY_FFMPEG = _STATIC_FFMPEG if os.path.isfile(_STATIC_FFMPEG) else "ffmpeg"
 
 # Diagnostic: when True, every transmission also saves the exact VBR TS it
 # sends to the CBR relay into tuning/runs/on_air/ (~30 MB per 5 min at
@@ -742,7 +759,7 @@ def build_cbr_relay_command(input_url, output_url, ts_bitrate,
         # -nostdin: otherwise ffmpeg reads keys from the terminal it was
         # started from - typing/pasting there while on air switched it
         # to debug output and a command prompt (funnyClock, 2026-09-26).
-        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "warning",
+        CBR_RELAY_FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "warning",
         "-fflags", "+nobuffer", "-probesize", "32768", "-analyzeduration", "1000000",
         "-i", input_url,
         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
@@ -832,7 +849,11 @@ def configure_pluto(mqtt_client, ip, callsign, profile):
     # (via pluto_mqtt_diagnostic.py) passed cleanly, and every real DATV-Red
     # profile (p1-p7) ships digitalgain=0 too, so it's back in the sequence.
     publish(mqtt_client, callsign, "tx/dvbs2/digitalgain", "0")
-    publish(mqtt_client, callsign, "tx/dvbs2/firfilter", "1")
+    # Despite the name this is the roll-off (PlutoDVB2 tsinputmux.cpp
+    # setneonmodcod()): 0 = 0.20, 1 = 0.15. 0.15 only exists in DVB-S2X, so
+    # 0.20 (plain DVB-S2, also what DATV-Easy sends) for wider receiver
+    # compatibility - was 1 until 2026-10-02.
+    publish(mqtt_client, callsign, "tx/dvbs2/firfilter", "0")
     publish(mqtt_client, callsign, "tx/dvbs2/tssourceaddress",
             "{}:{}".format(ip, PLUTO_TS_PORT))
 
@@ -1189,12 +1210,16 @@ def load_funny_clock():
     labels, TONE_SCHEDULE, frame_wall_time()) instead of a copy, so the
     standalone script and this source can't drift apart. Only the transmit
     side is this module's own (Pluto, relay, PTT, web log/stop, PA
-    interlock). The background is drawn once with this run's callsign."""
+    interlock). The background is drawn once with this run's callsign and
+    the Setup page's QRA locator (station_locator.py)."""
+    import station_locator
+    station_locator.init(SCRIPT_DIR)
     clock_dir = os.path.join(SCRIPT_DIR, "funnyClock")
     if clock_dir not in sys.path:
         sys.path.insert(0, clock_dir)
     import clock_tx
     clock_tx.CALLSIGN = CALLSIGN
+    clock_tx.LOCATOR = station_locator.load()
     clock_tx.render_background(clock_tx.BACKGROUND_PNG)
     clock_tx.tone_labels = clock_tx.render_tone_labels()
     return clock_tx
@@ -1224,6 +1249,17 @@ def track_video_file_position(pipeline):
 
     queue.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, on_buffer)
     return state
+
+
+def start_video_loop_reader(source_path):
+    """For SOURCE == "video" with VIDEO_LOOP: an ffmpeg that reads the file
+    over and over (-stream_loop -1, timestamps carried on across loops) and
+    pipes it out as one endless MPEG-TS - see VIDEO_LOOP."""
+    return subprocess.Popen(
+        [CBR_RELAY_FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "error",
+         "-stream_loop", "-1", "-i", source_path,
+         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-f", "mpegts", "pipe:1"],
+        stdout=subprocess.PIPE)
 
 
 def camera_capture_size(width, height):
@@ -1482,7 +1518,9 @@ def build_pipeline_description(ip, profile, source_path=None,
             # Pads are created dynamically once the file's streams are known,
             # but gst_parse_launch defers "filesrc." links until then - the
             # same idiom as `gst-launch-1.0 uridecodebin ... name=d d. ! ...`.
-            "uridecodebin uri={} name=filesrc".format(Gst.filename_to_uri(source_path)),
+            "uridecodebin uri={} name=filesrc".format(Gst.filename_to_uri(source_path))
+            if VIDEO_LOOP_FD is None else
+            "fdsrc fd={} ! decodebin name=filesrc".format(VIDEO_LOOP_FD),
         ]
         parts += video_chain
         parts += [
@@ -1656,6 +1694,7 @@ def main():
     mqtt_client = mqtt_connect(pluto_ip) if to_pluto else None
     telemetry = {}
     cbr_relay = None
+    video_loop_reader = None
     gst_pipeline = None
     try:
         if to_pluto:
@@ -1671,6 +1710,11 @@ def main():
                 mqtt_client, pluto_ip, CALLSIGN, profile, telemetry)
             cbr_relay = start_cbr_relay(pluto_ip, ts_bitrate)
 
+        if SOURCE == "video" and VIDEO_LOOP:
+            global VIDEO_LOOP_FD
+            video_loop_reader = start_video_loop_reader(source_path)
+            VIDEO_LOOP_FD = video_loop_reader.stdout.fileno()
+            log("🔁 Video will loop until stopped.")
         pipeline_description = build_pipeline_description(
             pluto_ip, profile, source_path, top_bar_enabled, bottom_bar_enabled)
         log("🎬 Starting video stream...")
@@ -1761,7 +1805,11 @@ def main():
                 log("🔚 EOS on the bus from {} - transmission ends here.".format(
                     message.src.get_name()))
                 break
-            if video_source is not None and video_position is not None:
+            if video_loop_reader is not None and video_loop_reader.poll() is not None:
+                raise RuntimeError("Video loop reader (ffmpeg) exited with code {}".format(
+                    video_loop_reader.returncode))
+            if (video_loop_reader is None and video_source is not None
+                    and video_position is not None):
                 ok_dur, duration = video_source.query_duration(Gst.Format.TIME)
                 position = video_position["pts"]
                 if (ok_dur and position is not None and duration > 0
@@ -1822,6 +1870,9 @@ def main():
         log("🛑 Stopping...")
         if gst_pipeline is not None:
             gst_pipeline.set_state(Gst.State.NULL)
+        if video_loop_reader is not None:
+            video_loop_reader.kill()
+            video_loop_reader.wait()
         if cbr_relay is not None:
             cbr_relay.terminate()
             try:

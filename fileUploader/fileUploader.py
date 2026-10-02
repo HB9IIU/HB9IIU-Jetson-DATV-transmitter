@@ -109,7 +109,11 @@ def status():
     except Exception as exc:
         usb = dict(available=False,error=str(exc),mount='')
         videos = []
-    return jsonify(usb=usb,metrics=telemetry,jobs=engine.snapshot(),videos=videos,active=engine.active)
+    on_sd = engine.sd_names()
+    for item in videos:
+        item['on_sd'] = item['output_name'].casefold() in on_sd
+    return jsonify(usb=usb,metrics=telemetry,jobs=engine.snapshot(),videos=videos,active=engine.active,
+                   copy=dict(engine.copy) if engine.copy else None)
 
 @app.route('/api/jobs', methods=['POST'])
 def reserve():
@@ -159,6 +163,11 @@ def media(video_id):
     except Exception:
         f.close()
         raise
+
+@app.route('/api/videos/<video_id>/copy-to-sd', methods=['POST'])
+def copy_to_sd(video_id):
+    engine.copy_to_sd(video_id)
+    return jsonify(ok=True),202
 
 @app.route('/api/videos/<video_id>', methods=['DELETE'])
 def delete(video_id):

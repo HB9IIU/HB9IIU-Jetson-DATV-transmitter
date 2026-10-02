@@ -5,6 +5,7 @@ old_project_TO_DELETE/
 *.pid
 overlay_settings.json
 pluto_callsign.json
+station_locator.json
 opentuner_settings.json
 tx_offset_log.csv
 usb_video_key_registry.json
@@ -42,6 +43,9 @@ preprocessed_*x*/
 # tuning/results/ (small text summaries) stays versioned.
 tuning/clips/
 tuning/runs/
+
+# Static ffmpeg build used by the CBR relay (50 MB binaries, downloaded)
+ffmpeg-static/
 
 # Local Python environment and Video Library runtime state
 .venv/

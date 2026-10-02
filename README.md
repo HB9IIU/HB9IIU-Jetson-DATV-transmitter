@@ -51,8 +51,13 @@ Evariste's (F5OEO) PlutoDVB2 firmware, does the DVB-S2 modulation.
 
 Linux login for SSH: user `daniel`, password `a`. Please change it with `passwd`.
 
-The image uses 20 GB of the card. On a bigger card the rest stays unused
-(you can grow the partition later with GParted).
+The image uses 20 GB of the card. To use the rest of a bigger card, run on
+the Jetson:
+
+1. `sudo parted /dev/mmcblk0 resizepart 1` - answer `Yes`, then `100%`
+2. `sudo resize2fs /dev/mmcblk0p1`
+
+`df -h /` then shows the full size.
 
 ## Features
 
@@ -152,6 +157,8 @@ Setting it up:
 - **[DATV-Red](https://github.com/Psynosaur/DATV-Red)**, whose source showed
   how to control the PlutoDVB2 firmware over MQTT
 - **Tom ZR6TG** for OpenTuner, the base of the modified receiver software
+- **F1EJP** for DATV-Easy, whose stream served as a reference for the
+  encoder settings
 - **BATC** for the QO-100 wideband spectrum monitor
 - **AMSAT-DL** and everyone who keeps QO-100 running
 - **Claude (Anthropic)**, my coding assistant, which wrote a lot of the code

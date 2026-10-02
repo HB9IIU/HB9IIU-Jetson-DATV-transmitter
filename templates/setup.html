@@ -31,18 +31,22 @@
   <main class="container-xxl py-4 py-lg-5">
     <header class="mb-4">
       <div class="eyebrow mb-2">PLUTO</div>
-      <h1 class="display-6 fw-bold mb-2">Callsign</h1>
-      <p class="text-muted-custom mb-0">Used to build every MQTT topic between this app and the Pluto. Applying a new one pushes it to the Pluto and reboots it - both sides must agree or streaming fails.</p>
+      <h1 class="display-6 fw-bold mb-0">Callsign &amp; Locator</h1>
     </header>
 
     <section class="row g-3 g-xl-4">
       <div class="col-12">
         <article class="surface step-card p-3 p-lg-4">
-          <p class="mb-3">Current: <span class="fw-semibold" id="callsign-current">—</span></p>
-          <label class="form-label fw-semibold" for="callsign-input">New callsign</label>
-          <div class="d-flex gap-2 flex-wrap align-items-start">
-            <input type="text" class="form-control" id="callsign-input" style="max-width: 220px" maxlength="10" placeholder="e.g. HB9IIU">
-            <button class="btn btn-warning" id="callsign-apply-button" type="button">Apply &amp; Reboot Pluto</button>
+          <div class="d-flex gap-3 flex-wrap align-items-end">
+            <div>
+              <label class="form-label fw-semibold" for="callsign-input">Callsign</label>
+              <input type="text" class="form-control" id="callsign-input" style="width: 220px" maxlength="10" placeholder="e.g. HB9IIU">
+            </div>
+            <div>
+              <label class="form-label fw-semibold" for="locator-input">QRA locator</label>
+              <input type="text" class="form-control" id="locator-input" style="width: 220px" maxlength="6" placeholder="e.g. JN36kl">
+            </div>
+            <button class="btn btn-warning" id="callsign-apply-button" type="button">Apply</button>
           </div>
           <span class="small text-muted-custom d-block mt-2" id="callsign-message"></span>
         </article>

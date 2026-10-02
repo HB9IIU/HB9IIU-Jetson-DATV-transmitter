@@ -207,7 +207,9 @@ loadOverlaySettings();
  * up until /api/telemetry reports the Pluto talking again under the new
  * callsign's topics.
  */
-const callsignCurrent = document.querySelector('#callsign-current');
+// Last callsign loaded from the server - Apply only reboots the Pluto if
+// the field differs from it.
+let currentCallsign = '';
 const callsignInput = document.querySelector('#callsign-input');
 const callsignApplyButton = document.querySelector('#callsign-apply-button');
 const callsignMessage = document.querySelector('#callsign-message');
@@ -217,17 +219,33 @@ const callsignRebootStatus = document.querySelector('#callsign-reboot-status');
 const callsignRebootDetail = document.querySelector('#callsign-reboot-detail');
 const callsignRebootClose = document.querySelector('#callsign-reboot-close');
 
+const locatorInput = document.querySelector('#locator-input');
+
+function setCallsignMessage(text, isError) {
+  callsignMessage.textContent = text;
+  callsignMessage.classList.toggle('text-danger', Boolean(isError));
+}
+
 async function loadCallsign() {
   if (!callsignApplyButton) return;
   try {
     const response = await fetch('/api/pluto/callsign', { cache: 'no-store' });
     if (!response.ok) throw new Error('Request failed');
     const data = await response.json();
-    callsignCurrent.textContent = data.callsign;
+    currentCallsign = data.callsign;
     callsignInput.value = data.callsign;
   } catch (error) {
     console.error('loadCallsign failed:', error);
-    callsignCurrent.textContent = 'unknown';
+  }
+}
+
+async function loadLocator() {
+  try {
+    const response = await fetch('/api/locator', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Request failed');
+    locatorInput.value = (await response.json()).locator;
+  } catch (error) {
+    console.error('loadLocator failed:', error);
   }
 }
 
@@ -257,23 +275,44 @@ async function waitForPlutoBackOnline() {
   return false;
 }
 
+// One Apply for both fields. The locator is just saved (used from the next
+// SBB Clock start - see app.py's locator_set()); only a changed callsign
+// goes on to push it to the Pluto and reboot it.
 callsignApplyButton?.addEventListener('click', async () => {
   const newCallsign = (callsignInput.value || '').trim().toUpperCase();
+  const newLocator = (locatorInput.value || '').trim();
   if (!/^[A-Z0-9]{3,10}$/.test(newCallsign)) {
-    callsignMessage.textContent = 'Callsign must be 3-10 letters/digits.';
-    callsignMessage.classList.add('text-danger');
+    setCallsignMessage('Callsign must be 3-10 letters/digits.', true);
     return;
   }
-  if (!window.confirm(
+  if (!/^[A-R]{2}[0-9]{2}([A-X]{2})?$/i.test(newLocator)) {
+    setCallsignMessage('Locator must be 4 or 6 characters, e.g. JN36 or JN36kl.', true);
+    return;
+  }
+  const callsignChanged = newCallsign !== currentCallsign;
+  if (callsignChanged && !window.confirm(
     'Push "' + newCallsign + '" to the Pluto and reboot it now?\n\n' +
     'Any active transmission will stop, and the Pluto will be offline for a bit.')) {
     return;
   }
 
   callsignApplyButton.disabled = true;
-  callsignMessage.classList.remove('text-danger');
-  callsignMessage.textContent = '';
+  setCallsignMessage('', false);
   try {
+    const locatorResponse = await fetch('/api/locator', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ locator: newLocator }),
+    });
+    const locatorResult = await locatorResponse.json();
+    if (!locatorResponse.ok) throw new Error(locatorResult.error || 'Request failed');
+    locatorInput.value = locatorResult.locator;
+
+    if (!callsignChanged) {
+      setCallsignMessage('Saved - the locator is used on the next SBB Clock start.', false);
+      return;
+    }
+
     const response = await fetch('/api/pluto/callsign', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -299,8 +338,7 @@ callsignApplyButton?.addEventListener('click', async () => {
 
     await loadCallsign();
   } catch (error) {
-    callsignMessage.textContent = 'Could not apply callsign: ' + error.message;
-    callsignMessage.classList.add('text-danger');
+    setCallsignMessage('Could not apply: ' + error.message, true);
   } finally {
     callsignApplyButton.disabled = false;
   }
@@ -312,6 +350,7 @@ callsignRebootClose?.addEventListener('click', () => {
 });
 
 loadCallsign();
+loadLocator();
 
 /**
  * OpenTuner auto-tune - see opentuner_quicktune.py. Blank IP = broadcast to

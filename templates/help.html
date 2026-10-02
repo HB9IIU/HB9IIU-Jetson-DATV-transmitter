@@ -99,6 +99,7 @@
         <li>Open the <a href="http://{{ request.host.split(':')[0] }}:8088/">Video Library</a>, choose a source file, enter an output name, then select <strong>Upload &amp; prepare video</strong>.</li>
         <li>Wait for the upload and conversion to finish. Preparation can take approximately as long as the video's running time.</li>
         <li>When the status reads <strong>Ready for DATV</strong>, reload the Home page if necessary. The file will be available under <strong>Video</strong>.</li>
+        <li>Optional: select <strong>Copy to SD</strong> next to a video to keep it on the SD card, so it stays available without the USB drive. Copying needs the video's size plus 500 MiB free on the SD card.</li>
       </ol>
       <div class="help-warning">While a video is being prepared, keep the USB drive connected and do not restart the Jetson or the Video Library service. An interruption may require the conversion to be retried.</div>
     </article>
@@ -107,6 +108,7 @@
       <h2 class="h5 fw-bold mb-3">Setup page</h2>
       <ul class="help-list mb-0">
         <li><strong>Callsign</strong> — updates the callsign used by the app and Pluto. Applying a change stops any active transmission and reboots the Pluto.</li>
+        <li><strong>QRA locator</strong> — the locator shown on the SBB Clock testcard.</li>
         <li><strong>Top/bottom banner &amp; marquee</strong> — configures the overlays used by Camera and Video sources. Testcards are unchanged.</li>
         <li><strong>OpenTuner</strong> — configures automatic tuning, LNB correction and TX frequency correction.</li>
         <li><strong>Add prepared videos via USB</strong> — selects the USB drive used by the Video Library.</li>

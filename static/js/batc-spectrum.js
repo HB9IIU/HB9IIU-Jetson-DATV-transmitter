@@ -14,9 +14,17 @@
   const CHANNEL_CENTERS = Array.from({ length: 14 }, (_, index) => 10492.75 + index * 0.5);
   // QO-100 WB: 2400.0 MHz uplink -> 10489.5 MHz downlink (e.g. 2403.25 -> 10492.75)
   const TRANSPONDER_OFFSET_MHZ = 8089.5;
+  // BATC/AMSAT-DL bandplan: above 10497.0 MHz is narrow DATV only, so
+  // SR 500 may use the slots up to 10496.75; SR 333 may use all of them.
+  const SR500_MAX_CENTER = 10496.75;
   const canvas = document.querySelector('#batc-spectrum-canvas');
   const status = document.querySelector('#batc-status');
   const frequencyInput = document.querySelector('#frequency');
+  const symbolRateSelect = document.querySelector('#symbol-rate');
+
+  function slotAllowed(center) {
+    return !symbolRateSelect || symbolRateSelect.value !== '500' || center <= SR500_MAX_CENTER;
+  }
 
   if (!canvas || !status) return;
 
@@ -110,7 +118,8 @@
     CHANNEL_CENTERS.forEach((center) => {
       const active = slotHasTransmission(center);
       slotStates.set(center, active);
-      context.fillStyle = active === null ? '#647483' : (active ? '#ff4d5e' : '#25c26e');
+      if (!slotAllowed(center)) context.fillStyle = '#2f3a44';
+      else context.fillStyle = active === null ? '#647483' : (active ? '#ff4d5e' : '#25c26e');
       context.fillRect(frequencyX(center) - slotWidth / 2, bottom + 10, slotWidth, 6);
       if (center === selectedCenter) {
         context.strokeStyle = '#ffffff';
@@ -233,11 +242,24 @@
     ));
     const spacingPixels = 0.5 * canvas.clientWidth / (END_MHZ - START_MHZ);
     const centerPixels = (center - START_MHZ) * canvas.clientWidth / (END_MHZ - START_MHZ);
-    if (Math.abs(x - centerPixels) > spacingPixels * 0.31 || slotStates.get(center) !== false) return;
+    if (Math.abs(x - centerPixels) > spacingPixels * 0.31 || slotStates.get(center) !== false
+        || !slotAllowed(center)) return;
 
     selectedCenter = center;
     frequencyInput.value = (center - TRANSPONDER_OFFSET_MHZ).toFixed(3);
     frequencyInput.dispatchEvent(new Event('change', { bubbles: true }));
+    draw(latestFrame);
+  });
+  // Switching to SR 500 while a narrow-only slot is chosen clears the
+  // frequency, so the user has to pick an allowed slot.
+  symbolRateSelect?.addEventListener('change', () => {
+    const chosen = frequencyInput && frequencyInput.value
+      ? parseFloat(frequencyInput.value) + TRANSPONDER_OFFSET_MHZ : null;
+    if (chosen !== null && !slotAllowed(chosen)) {
+      selectedCenter = null;
+      frequencyInput.value = '';
+      frequencyInput.dispatchEvent(new Event('change', { bubbles: true }));
+    }
     draw(latestFrame);
   });
   document.addEventListener('visibilitychange', () => {

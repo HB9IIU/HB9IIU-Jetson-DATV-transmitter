@@ -23,6 +23,10 @@ RESOLUTIONS = [(1280, 720)]
 ORIGINAL_FOLDER = 'original videos'
 UPLOAD_INTERRUPTED = 'Upload interrupted (page reloaded or closed, or connection lost) - please upload again'
 PREVIEW_FOLDER = 'preprocessed_{}x{}'.format(*RESOLUTIONS[-1])
+# "Copy to SD" target - the same folder the main app lists SD videos from.
+SD_FOLDER = os.path.join(os.path.dirname(BASE), PREVIEW_FOLDER)
+# Always left free on the SD card after a copy, so the system keeps room.
+SD_RESERVE_BYTES = 500 * 1024**2
 
 
 def normalized_name(name):
@@ -59,7 +63,8 @@ class Engine:
         self.jobs = {}
         self.durations = {}
         self.active = None
-        self.ffmpeg = os.path.join(BASE, 'bin', 'ffmpeg')
+        self.copy = None
+        self.ffmpeg =os.path.join(BASE, 'bin', 'ffmpeg')
         self.ffprobe = os.path.join(BASE, 'bin', 'ffprobe')
         for name in os.listdir(self.state):
             if re.fullmatch('[a-f0-9]{32}.json', name):
@@ -154,6 +159,65 @@ class Engine:
                 if os.path.exists(path):
                     os.remove(path)
             self.jobs.pop(video_id, None)
+
+    def sd_names(self):
+        """Casefolded names of the videos already on the SD card."""
+        try:
+            return {n.casefold() for n in os.listdir(SD_FOLDER) if n.lower().endswith('.mkv')}
+        except OSError:
+            return set()
+
+    def copy_to_sd(self, video_id):
+        """Start copying one USB video to the SD card in the background
+        (one at a time); progress is in self.copy, shown by /api/status."""
+        with self.lock:
+            if self.copy and not self.copy['done']:
+                raise ValueError('A copy is already running')
+            item = next((i for i in self.catalog() if i['id'] == video_id), None)
+            if item is None:
+                raise ValueError('Video is not in the USB catalog')
+            name = item['output_name']
+            if name.casefold() in self.sd_names():
+                raise ValueError('{} is already on the SD card'.format(name))
+            os.makedirs(SD_FOLDER, exist_ok=True)
+            s = os.statvfs(SD_FOLDER)
+            free = s.f_bavail * s.f_frsize
+            if item['size'] + SD_RESERVE_BYTES > free:
+                raise ValueError('Not enough space on the SD card: needs {:.0f} MiB, {:.0f} MiB free '
+                                 '(500 MiB is always kept spare)'.format(item['size'] / 1024**2, free / 1024**2))
+            self.copy = dict(id=video_id, name=name, copied=0, total=item['size'], error=None, done=False)
+            threading.Thread(target=self._copy, args=(self.copy,), daemon=True).start()
+
+    def _copy(self, state):
+        # Hidden .part name while copying, so the main app never lists a
+        # half-copied video; renamed into place only once fully on disk.
+        temp = os.path.join(SD_FOLDER, '.' + state['name'] + '.part')
+        try:
+            fd = self.usb.open_subfolder(PREVIEW_FOLDER)
+            try:
+                src = os.open(state['name'], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+            finally:
+                os.close(fd)
+            with os.fdopen(src, 'rb') as fin, open(temp, 'wb') as fout:
+                while True:
+                    chunk = fin.read(4 * 1024**2)
+                    if not chunk:
+                        break
+                    fout.write(chunk)
+                    state['copied'] += len(chunk)
+                fout.flush()
+                os.fsync(fout.fileno())
+            if state['name'].casefold() in self.sd_names():
+                raise ValueError('{} appeared on the SD card meanwhile'.format(state['name']))
+            os.replace(temp, os.path.join(SD_FOLDER, state['name']))
+        except Exception as exc:
+            state['error'] = str(exc)
+            try:
+                os.remove(temp)
+            except OSError:
+                pass
+        finally:
+            state['done'] = True
 
     def reserve(self, original, output, size):
         output = normalized_name(output)
