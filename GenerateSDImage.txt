@@ -17,7 +17,11 @@ PART A - ON THE JETSON (ssh daniel@jetson-nano.local)
 
 1. Stop any transmission in the web UI.
 
-2. Clear the upload history and the list of known USB sticks:
+2. Remove test leftovers (keep ffmpeg-static/ - the relay needs it):
+   tuning/clips/, tuning/runs/, new tuning/results files, test videos in
+   preprocessed_1280x720/ (keep demo.mkv), web_stream.log,
+   tx_offset_log.csv, station_locator.json, opentuner_settings.json.
+   Then clear the upload history and the list of known USB sticks:
 
    sudo systemctl stop datv-fileuploader
    rm -f ~/jetson-stream-panel/fileUploader/state/*.json ~/jetson-stream-panel/fileUploader/state/*.log
@@ -54,8 +58,22 @@ PART B - ON UBUNTU (ssh daniel@zatoc.local)
    The last line MUST be:   1  28672s  40988671s  40960000s  ext4  APP
    If yes -> go to step 7.
 
-6. Only if APP is bigger (e.g. the card was expanded): open GParted,
-   shrink /dev/sde1 to exactly 20000 MiB, Apply, then repeat step 5.
+6. Only if APP is bigger (e.g. the card was expanded with the README's
+   resizepart/resize2fs steps): shrink it back to exactly 20000 MiB.
+   Either GParted (shrink /dev/sde1 to 20000 MiB, Apply), or on the
+   command line (done this way 2026-10-02; keeps the partition's GUIDs):
+
+   sudo umount /dev/sde*
+   sudo e2fsck -fy /dev/sde1
+   sudo sgdisk -i 1 /dev/sde        (note "Partition unique GUID")
+   sudo resize2fs /dev/sde1 19000M
+   sudo sgdisk -d 1 -n 1:28672:40988671 -t 1:0FC63DAF-8483-4772-8E79-3D69D8477DE4 \
+        -u 1:<unique GUID from above> -c 1:APP /dev/sde
+   sudo partprobe /dev/sde
+   sudo resize2fs /dev/sde1
+   sudo e2fsck -fy /dev/sde1
+
+   Then repeat step 5.
 
 7. Unmount (errors "not mounted" are fine):
 
@@ -126,5 +144,5 @@ FLASHING INSTRUCTIONS FOR OTHER USERS
   same file and card - don't recommend it.)
 - Linux: steps 14 + 15 above (with their own card name instead of sde).
 - Login: user daniel, password a
-- The system uses 20 GB; the rest of a bigger card stays unused
-  (can be added later with GParted).
+- The system uses 20 GB; the rest of a bigger card can be added on the
+  Jetson itself (see the README).
