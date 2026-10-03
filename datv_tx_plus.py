@@ -1500,6 +1500,12 @@ def build_pipeline_description(ip, profile, source_path=None,
             video_chain = [
                 "filesrc. ! queue name=video_file_queue ! nvvidconv !",
                 "video/x-raw,width={},height={},format=I420 !".format(width, height),
+                # A file converted before 2026-10-03 from 4:3 carries SAR 3:4,
+                # and the compositor then rescaled it in software every frame
+                # (stutter, empty right quarter - ON1AVO). capssetter only
+                # relabels the pixels as square (nvvidconv refuses to change
+                # the PAR itself), so such a file is just shown stretched.
+                "capssetter caps=video/x-raw,pixel-aspect-ratio=1/1 !",
                 "videorate ! video/x-raw,framerate={}/1 !".format(FPS),
                 "videoconvert ! {}".format(video_sink),
             ]

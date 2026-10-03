@@ -58,9 +58,17 @@ def h264_output_args(width, height):
     hardware-decodable format. High profile 8-bit 4:2:0 is what the Jetson
     Nano's nvv4l2decoder handles; veryfast keeps conversion time down on
     the Nano's CPU (at a fixed CRF a faster preset mostly costs file size,
-    not quality); -g 50 = a keyframe every 2 s."""
+    not quality); -g 50 = a keyframe every 2 s.
+
+    Other aspect ratios (e.g. 4:3) are fitted inside width x height with
+    black bars and square pixels (setsar=1). A plain scale=WxH kept the
+    shape via a non-square SAR (3:4 for 4:3) instead, which the transmitter's
+    compositor then rescaled in software every frame - stuttering video and
+    audio and an empty right quarter on air (ON1AVO, 2026-10-03)."""
     return [
-        "-vf", "scale={}:{},fps={}".format(width, height, TARGET_FPS),
+        "-vf", "scale={w}:{h}:force_original_aspect_ratio=decrease,"
+               "pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}".format(
+                   w=width, h=height, fps=TARGET_FPS),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
         "-profile:v", "high", "-pix_fmt", "yuv420p", "-g", str(2 * TARGET_FPS),
     ]
